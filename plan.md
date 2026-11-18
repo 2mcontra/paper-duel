@@ -37,6 +37,7 @@ The video leaves these open. Each is a **configurable rule option** (`RulesConfi
 | R8 | Does an attack take the whole turn | Yes, one action per turn | N/A |
 | R9 | Book pages | 1 to 300, uniform | Configurable |
 | R10 | Turn timer | 30 s, auto-roll on timeout | Off |
+| R11 | No slot number is alive on both sides, so no further elimination is possible (found in M1 simulation: about 95% of games reach this) | Game ends; the player with more living slots wins | Declare a draw |
 
 **Status:** defaults confirmed.
 

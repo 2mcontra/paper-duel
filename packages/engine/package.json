@@ -9,6 +9,10 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sim": "tsx scripts/sim.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.23.15"
   }
 }

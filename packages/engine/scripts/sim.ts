@@ -69,7 +69,7 @@ const random = createRng(seed);
 const lengths: number[] = [];
 let nonTerminated = 0;
 const wins = { first: 0, second: 0, draw: 0 };
-const reasons = { all_eliminated: 0, stalemate: 0 };
+const reasons = { fights_won: 0, stalemate: 0, forfeit: 0 };
 const start = performance.now();
 
 for (let i = 0; i < games; i++) {
@@ -108,6 +108,6 @@ Book opens    mean ${mean.toFixed(1)}, median ${pct(0.5)}, p95 ${pct(0.95)}, max
 First mover   ${share(wins.first)} wins
 Second mover  ${share(wins.second)} wins
 Draws         ${share(wins.draw)}
-End reason    all eliminated ${share(reasons.all_eliminated)}, stalemate ${share(reasons.stalemate)}`);
+End reason    win target ${share(reasons.fights_won)}, stalemate ${share(reasons.stalemate)}`);
 
 process.exitCode = nonTerminated > 0 ? 1 : 0;

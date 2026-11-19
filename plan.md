@@ -20,7 +20,7 @@ A 2-player multiplayer browser version of the pen-and-paper stick-figure gun due
 - An armed figure can attack the opponent's **same-numbered slot**.
   - If the opponent has a gun built on that slot, that slot is **eliminated**.
 - An eliminated slot is dead permanently and can never be redrawn.
-- **Win:** all 5 of the opponent's slots are eliminated.
+- **Win:** first to eliminate 3 of the opponent's slots (best of 5, see R11). The literal rule of eliminating all 5 is available as `winTarget: 5`.
 
 ### 1.2 Ambiguities and proposed defaults
 The video leaves these open. Each is a **configurable rule option** (`RulesConfig`), with the default shown.
@@ -37,7 +37,7 @@ The video leaves these open. Each is a **configurable rule option** (`RulesConfi
 | R8 | Does an attack take the whole turn | Yes, one action per turn | N/A |
 | R9 | Book pages | 1 to 300, uniform | Configurable |
 | R10 | Turn timer | 30 s, auto-roll on timeout | Off |
-| R11 | No slot number is alive on both sides, so no further elimination is possible (found in M1 simulation: about 95% of games reach this) | Game ends; the player with more living slots wins | Declare a draw |
+| R11 | Win condition. Literal rules (wipe out all 5) almost never finish: M1 simulation showed about 95% of games reach a point where no slot number is alive on both sides | **Decided: best of 5, first to 3 fights won** (`winTarget: 3`) | `winTarget` 1 to 5; with 4 or 5, a stalled game goes to the player with more living slots, or a draw |
 
 **Status:** defaults confirmed.
 

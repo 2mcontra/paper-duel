@@ -5,6 +5,7 @@ import {
   PARTS,
   SLOT_NUMBERS,
   type Action,
+  type EndReason,
   type GameEvent,
   type GameState,
   type PlayerIndex,
@@ -111,10 +112,10 @@ function passTurn(d: Draft): void {
   emit(d, { type: "TurnPassed", to: d.s.turn });
 }
 
-/** Ends the game if someone has won or no elimination is possible any more. */
+/** Ends the game if someone reached the win target, or no elimination is possible any more. */
 function checkGameOver(d: Draft): boolean {
   const [a, b] = d.s.players;
-  const end = (winner: PlayerIndex | null, reason: "all_eliminated" | "stalemate") => {
+  const end = (winner: PlayerIndex | null, reason: EndReason) => {
     d.s.phase = "finished";
     d.s.winner = winner;
     d.s.endReason = reason;
@@ -124,8 +125,10 @@ function checkGameOver(d: Draft): boolean {
   };
   const aliveA = aliveCount(a);
   const aliveB = aliveCount(b);
-  if (aliveB === 0) return end(0, "all_eliminated");
-  if (aliveA === 0) return end(1, "all_eliminated");
+  const target = d.s.rules.winTarget;
+  const slots = SLOT_NUMBERS.length;
+  if (slots - aliveB >= target) return end(0, "fights_won");
+  if (slots - aliveA >= target) return end(1, "fights_won");
 
   // An elimination needs the same number alive on both sides. Without one, the game can't progress.
   const contested = SLOT_NUMBERS.some(
@@ -247,6 +250,22 @@ export function resolveTurn(state: GameState, page: number): TurnResult {
 /** Under R3 "choose": the current player decides whether to fire the armed slot. */
 export function resolveChoice(state: GameState, attack: boolean): TurnResult {
   return applyAction(state, { type: "choose", attack });
+}
+
+/**
+ * Ends the game because `loser` left or timed out (decided by the server, outside the rules).
+ * Logged like any other event so replays stay complete.
+ */
+export function forfeit(state: GameState, loser: PlayerIndex): TurnResult {
+  if (state.phase !== "playing") throw new EngineError("The game is over");
+  const d = begin(state);
+  const winner = other(loser);
+  d.s.phase = "finished";
+  d.s.winner = winner;
+  d.s.endReason = "forfeit";
+  d.s.pendingChoice = null;
+  emit(d, { type: "GameOver", winner, reason: "forfeit" });
+  return finish(d);
 }
 
 /** The actions that produced a log, in order. Used to replay a game. */

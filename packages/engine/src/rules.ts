@@ -8,6 +8,7 @@ export const DEFAULT_RULES: Readonly<RulesConfig> = Object.freeze({
   ownDeadSlot: "waste",
   totalPages: 300,
   turnTimerSeconds: 30,
+  winTarget: 3,
   stalemate: "most_alive",
 });
 
@@ -32,7 +33,10 @@ export function resolveRules(overrides: Partial<RulesConfig> = {}): RulesConfig 
       throw new RulesError(`Invalid ${key}: ${String(rules[key])}`);
     }
   }
-  const { totalPages, turnTimerSeconds } = rules;
+  const { totalPages, turnTimerSeconds, winTarget } = rules;
+  if (!Number.isInteger(winTarget) || winTarget < 1 || winTarget > 5) {
+    throw new RulesError(`winTarget must be 1..5, got ${winTarget}`);
+  }
   if (!Number.isInteger(totalPages) || totalPages < 10 || totalPages % 10 !== 0) {
     throw new RulesError(`totalPages must be a positive multiple of 10, got ${totalPages}`);
   }

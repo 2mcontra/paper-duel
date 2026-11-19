@@ -33,7 +33,7 @@ export interface Roll {
 }
 
 export type Phase = "playing" | "finished";
-export type EndReason = "all_eliminated" | "stalemate";
+export type EndReason = "fights_won" | "stalemate" | "forfeit";
 
 export interface RulesConfig {
   /** R2: who takes the first turn. The engine is told the result; the server applies this. */
@@ -51,7 +51,12 @@ export interface RulesConfig {
   /** R10: seconds per turn before the server auto-rolls; null disables. Enforced by the server. */
   turnTimerSeconds: number | null;
   /**
-   * When no slot number is alive on both sides, nobody can ever be eliminated again.
+   * Slot fights a player must win (opponent slots eliminated) to win the game, 1..5.
+   * Default 3: best of 5. With 5 the game only ends early on a full wipe-out.
+   */
+  winTarget: number;
+  /**
+   * R11: when no slot number is alive on both sides, nobody can ever be eliminated again.
    * "most_alive": the player with more living slots wins (equal counts draw). "draw": always a draw.
    */
   stalemate: "most_alive" | "draw";

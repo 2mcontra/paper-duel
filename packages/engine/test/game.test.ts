@@ -37,7 +37,7 @@ describe("stalemate", () => {
   // After this shot, player 0 has {3} alive and player 1 has {5}: no number is shared.
   const position = (rules: Partial<RulesConfig> = {}) =>
     arrange(
-      newGame(rules),
+      newGame({ winTarget: 5, ...rules }),
       { 1: "dead", 5: "dead", 7: "dead", 9: "dead", 3: 5 },
       { 1: "dead", 7: "dead", 9: "dead", 3: 4, 5: 2 },
     );
@@ -50,7 +50,7 @@ describe("stalemate", () => {
 
   it("most_alive gives the win to the player with more living slots", () => {
     const s0 = arrange(
-      newGame(),
+      newGame({ winTarget: 5 }),
       { 1: "dead", 5: "dead", 7: "dead", 3: 5, 9: 1 },
       { 1: "dead", 7: "dead", 9: "dead", 3: 4, 5: 2 },
     );
@@ -61,7 +61,7 @@ describe("stalemate", () => {
 
   it("draw mode always draws", () => {
     const s0 = arrange(
-      newGame({ stalemate: "draw" }),
+      newGame({ winTarget: 5, stalemate: "draw" }),
       { 1: "dead", 5: "dead", 7: "dead", 3: 5, 9: 1 },
       { 1: "dead", 7: "dead", 9: "dead", 3: 4, 5: 2 },
     );
@@ -92,6 +92,7 @@ describe("rules config", () => {
       ownDeadSlot: "waste",
       totalPages: 300,
       turnTimerSeconds: 30,
+      winTarget: 3,
       stalemate: "most_alive",
     });
   });
@@ -102,6 +103,8 @@ describe("rules config", () => {
       { totalPages: 0 },
       { turnTimerSeconds: 2 },
       { bullets: "infinite" as never },
+      { winTarget: 0 },
+      { winTarget: 6 },
     ];
     for (const r of bad) expect(() => resolveRules(r)).toThrow(RulesError);
   });
@@ -150,7 +153,9 @@ describe("random games (property test)", () => {
     { unarmedTarget: "destroy_partial" },
     { bullets: "reusable" },
     { ownDeadSlot: "reroll" },
-    { stalemate: "draw" },
+    { winTarget: 5 },
+    { winTarget: 5, stalemate: "draw" },
+    { winTarget: 1 },
     { totalPages: 50 },
     {
       armedRoll: "choose",
@@ -169,10 +174,13 @@ describe("random games (property test)", () => {
         expect(terminated).toBe(true);
         expect(state.phase).toBe("finished");
         const alive = state.players.map((p) => p.slots.filter((s) => s.status === "alive").length);
-        if (state.endReason === "all_eliminated") {
+        const target = state.rules.winTarget;
+        if (state.endReason === "fights_won") {
           expect(state.winner).not.toBeNull();
-          expect(alive[1 - state.winner!]).toBe(0);
+          expect(5 - alive[1 - state.winner!]!).toBe(target);
+          expect(5 - alive[state.winner!]!).toBeLessThan(target);
         } else {
+          expect(target).toBeGreaterThan(3); // first to 3 or less can never stall
           expect(state.endReason).toBe("stalemate");
         }
         for (const p of state.players) {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EngineError,
+  forfeit,
   PARTS,
   SLOT_NUMBERS,
   getSlot,
@@ -199,27 +200,58 @@ describe("R3 choose", () => {
   });
 });
 
-describe("winning", () => {
-  it("the 5th elimination wins the game", () => {
-    const s0 = arrange(newGame(), { 9: 5 }, { 1: "dead", 3: "dead", 5: "dead", 7: "dead", 9: 4 });
+describe("winning (first to 3 by default)", () => {
+  it("the 3rd fight won ends the game", () => {
+    const s0 = arrange(newGame(), { 9: 5, 1: 2 }, { 1: "dead", 3: "dead", 9: 4 });
     const { state, events } = resolveTurn(s0, pageFor(9));
-    expect(events.at(-1)).toEqual({ type: "GameOver", winner: 0, reason: "all_eliminated" });
+    expect(events.at(-1)).toEqual({ type: "GameOver", winner: 0, reason: "fights_won" });
     expect(state.phase).toBe("finished");
     expect(state.winner).toBe(0);
+    expect(state.endReason).toBe("fights_won");
     expect(events.some((e) => e.type === "TurnPassed")).toBe(false);
   });
 
-  it("4 eliminations is not a win", () => {
-    const s0 = arrange(newGame(), { 7: 5, 9: 1 }, { 1: "dead", 3: "dead", 5: "dead", 7: 4, 9: 1 });
+  it("2 fights won is not a win", () => {
+    const s0 = arrange(newGame(), { 7: 5 }, { 1: "dead", 7: 4 });
     const { state } = resolveTurn(s0, pageFor(7));
     expect(slot(state, 1, 7).status).toBe("eliminated");
-    expect(state.phase).toBe("playing"); // slot 9 is still alive on both sides
+    expect(state.phase).toBe("playing");
     expect(state.turn).toBe(1);
   });
 
+  it("the second player can win too", () => {
+    const s0 = arrange(newGame({}, 1), { 3: 4, 5: "dead", 7: "dead" }, { 3: 5 });
+    const { state } = resolveTurn(s0, pageFor(3));
+    expect(state.winner).toBe(1);
+  });
+
+  it("winTarget 5: only a full wipe-out wins outright", () => {
+    const four = arrange(
+      newGame({ winTarget: 5 }),
+      { 9: 5 },
+      { 1: "dead", 3: "dead", 5: "dead", 7: 2, 9: 4 },
+    );
+    expect(resolveTurn(four, pageFor(9)).state.phase).toBe("playing");
+    const five = arrange(
+      newGame({ winTarget: 5 }),
+      { 9: 5 },
+      { 1: "dead", 3: "dead", 5: "dead", 7: "dead", 9: 4 },
+    );
+    expect(resolveTurn(five, pageFor(9)).state.winner).toBe(0);
+  });
+
   it("rejects actions after the game is over", () => {
-    const s0 = arrange(newGame(), { 9: 5 }, { 1: "dead", 3: "dead", 5: "dead", 7: "dead", 9: 4 });
+    const s0 = arrange(newGame(), { 9: 5 }, { 1: "dead", 3: "dead", 9: 4 });
     const { state } = resolveTurn(s0, pageFor(9));
     expect(() => resolveTurn(state, EVEN_PAGE)).toThrow(EngineError);
+  });
+});
+
+describe("forfeit", () => {
+  it("ends the game for the other player and logs it", () => {
+    const { state, events } = forfeit(newGame(), 0);
+    expect(events).toEqual([{ type: "GameOver", winner: 1, reason: "forfeit" }]);
+    expect(state).toMatchObject({ phase: "finished", winner: 1, endReason: "forfeit" });
+    expect(() => forfeit(state, 1)).toThrow(EngineError);
   });
 });

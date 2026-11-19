@@ -164,29 +164,39 @@ The page number is an **input** to `resolveTurn`, so the engine stays determinis
 
 All messages are JSON, validated with zod. A `type` field discriminates.
 
+Schemas and types live in `packages/protocol`, shared by server and client.
+
 ### 5.1 Client → Server
 | Message | Payload | Purpose |
 |---------|---------|---------|
 | `create_room` | `{ name, rules? }` | Make a room and get a code |
-| `join_room` | `{ code, name }` | Join with a 5-character code |
-| `quick_match` | `{ name }` | Join the matchmaking queue |
-| `ready` | `{}` | Mark ready |
+| `join_room` | `{ code, name }` | Join with a 5-character code (case-insensitive) |
+| `quick_match` | `{ name }` | Join a waiting public room, or open one |
+| `set_rules` | `{ rules }` | Host only, lobby only. Clears both ready flags |
+| `ready` | `{ ready }` | Set or clear ready; the game starts when both are ready |
 | `open_book` | `{}` | Request the roll for the current turn |
+| `choose` | `{ attack }` | Under R3 "choose": fire or hold an armed slot |
 | `rematch` | `{}` | Vote for a rematch |
-| `leave` | `{}` | Leave the room |
+| `leave` | `{}` | Leave the room (forfeits a game in progress) |
 | `resume` | `{ sessionToken }` | Reconnect after a drop |
+| `ping` | `{}` | Keep-alive and clock sync |
 
 ### 5.2 Server → Client
 | Message | Payload |
 |---------|---------|
-| `room_state` | Full snapshot (lobby, players, rules) |
-| `game_started` | Initial state and who goes first |
-| `book_result` | `{ page, digit, forPlayer }` plus the events that resulted |
-| `state_update` | Full or diff state after each turn |
-| `turn_timer` | `{ deadline }` |
-| `opponent_status` | connected or disconnected |
-| `game_over` | `{ winner, serverSeed? }` |
+| `joined` | `{ protocol, sessionToken, you, code }`: you hold a seat. Re-sent if your seat index changes |
+| `room_state` | `{ room }`: lobby snapshot (seats, ready, connected, rematch votes, rules) |
+| `game_started` | `{ game }`: a new game began |
+| `game_state` | `{ game }`: snapshot of the current game, sent on resume |
+| `turn_result` | `{ events, game, auto }`: one action and its result. `auto` means the turn timer acted |
+| `turn_timer` | `{ player, deadline }`: whose move it is; `deadline` is epoch ms or null |
+| `opponent_status` | `{ connected, graceDeadline }` |
+| `game_over` | `{ winner, reason, game }` |
+| `left` | `{ reason }`: you no longer hold a seat (`you_left`, `replaced`) |
+| `pong` | `{ serverTime }` |
 | `error` | `{ code, message }` |
+
+Players see absolute indices plus `you`; the client puts `you` on the left.
 
 ### 5.3 Rules enforced server-side
 - Only the player whose turn it is can send `open_book`, and only once per turn.

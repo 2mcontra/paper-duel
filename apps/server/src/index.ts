@@ -1,4 +1,15 @@
-import { SLOT_NUMBERS } from "@paper-duel/engine";
+import { buildApp } from "./app.js";
 
-// Placeholder entry point. Fastify + WebSocket arrive in M2.
-console.log(`paper-duel server stub (slots: ${SLOT_NUMBERS.join(", ")})`);
+const port = Number(process.env.PORT ?? 8787);
+const host = process.env.HOST ?? "0.0.0.0";
+
+const { app } = await buildApp({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    app.log.info({ signal }, "shutting down");
+    void app.close().then(() => process.exit(0));
+  });
+}
+
+await app.listen({ port, host });

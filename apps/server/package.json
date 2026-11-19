@@ -9,9 +9,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paper-duel/engine": "workspace:*"
+    "@fastify/websocket": "^11.3.7",
+    "@paper-duel/engine": "workspace:*",
+    "@paper-duel/protocol": "workspace:*",
+    "fastify": "^5.12.8"
   },
   "devDependencies": {
-    "tsx": "^4.23.15"
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "ws": "^8.23.0"
   }
 }

@@ -25,9 +25,13 @@ const ENUMS: { [K in keyof RulesConfig]?: readonly RulesConfig[K][] } = {
   stalemate: ["most_alive", "draw"],
 };
 
+/** Partial rules; undefined values are ignored (so parsed JSON can be passed straight in). */
+export type RulesOverrides = { [K in keyof RulesConfig]?: RulesConfig[K] | undefined };
+
 /** Merges overrides onto the defaults and validates the result. Throws RulesError. */
-export function resolveRules(overrides: Partial<RulesConfig> = {}): RulesConfig {
-  const rules: RulesConfig = { ...DEFAULT_RULES, ...overrides };
+export function resolveRules(overrides: RulesOverrides = {}): RulesConfig {
+  const defined = Object.fromEntries(Object.entries(overrides).filter(([, v]) => v !== undefined));
+  const rules: RulesConfig = { ...DEFAULT_RULES, ...defined };
   for (const [key, allowed] of Object.entries(ENUMS) as [keyof RulesConfig, unknown[]][]) {
     if (!allowed.includes(rules[key])) {
       throw new RulesError(`Invalid ${key}: ${String(rules[key])}`);

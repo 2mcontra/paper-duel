@@ -202,18 +202,21 @@ All messages are JSON, validated with zod. A `type` field discriminates.
 
 Schemas and types live in `packages/protocol`, shared by server and client.
 
-### 5.1 Client → Server
+### 5.1 Client → Server (protocol v2)
 | Message | Payload | Purpose |
 |---------|---------|---------|
-| `create_room` | `{ name, rules? }` | Make a room and get a code |
+| `create_room` | `{ name, rules?, maxPlayers? }` | Make a room (2 to 6 seats) and get a code |
 | `join_room` | `{ code, name }` | Join with a 5-character code (case-insensitive) |
 | `quick_match` | `{ name }` | Join a waiting public room, or open one |
-| `set_rules` | `{ rules }` | Host only, lobby only. Clears both ready flags |
-| `ready` | `{ ready }` | Set or clear ready; the game starts when both are ready |
-| `open_book` | `{}` | Request the roll for the current turn |
-| `choose` | `{ attack }` | Under R3 "choose": fire or hold an armed slot |
-| `rematch` | `{}` | Vote for a rematch |
-| `leave` | `{}` | Leave the room (forfeits a game in progress) |
+| `configure` | `{ rules?, maxPlayers? }` | Host only, lobby only. Clears everyone's ready flag |
+| `ready` | `{ ready }` | Set or clear ready |
+| `start` | `{}` | Host only: 2+ players, all ready. A full ready room starts by itself |
+| `play_card` | `{ play \| null }` | Queue (or cancel) a card for this round, before opening the book |
+| `open_book` | `{}` | Open the book for this round's go |
+| `set_target` | `{ targets }` | Pick who an armed slot shoots (two with Double shot) |
+| `emote` | `{ emote }` | Quick reaction; one per 1.5 s |
+| `rematch` | `{}` | Vote for a rematch; starts when everyone still seated votes |
+| `leave` | `{}` | Leave the room (in a game: you are out) |
 | `resume` | `{ sessionToken }` | Reconnect after a drop |
 | `ping` | `{}` | Keep-alive and clock sync |
 
@@ -221,13 +224,13 @@ Schemas and types live in `packages/protocol`, shared by server and client.
 | Message | Payload |
 |---------|---------|
 | `joined` | `{ protocol, sessionToken, you, code }`: you hold a seat. Re-sent if your seat index changes |
-| `room_state` | `{ room }`: lobby snapshot (seats, ready, connected, rematch votes, rules) |
-| `game_started` | `{ game }`: a new game began |
+| `room_state` | `{ room }`: seats (ready, connected, left, rematch votes, grace deadline), room size, rules |
+| `game_started` | `{ game }`: a new game, as **your view** (other hands and unfinished goes hidden) |
 | `game_state` | `{ game }`: snapshot of the current game, sent on resume |
-| `turn_result` | `{ events, game, auto }`: one action and its result. `auto` means the turn timer acted |
-| `turn_timer` | `{ player, deadline }`: whose move it is; `deadline` is epoch ms or null |
-| `opponent_status` | `{ connected, graceDeadline }` |
+| `game_update` | `{ events, game, auto }`: new events (redacted for you) and the game. `auto` lists players the round timer acted for |
+| `round_timer` | `{ round, deadline }`: epoch ms, or null with no timer |
 | `game_over` | `{ winner, reason, game }` |
+| `emote` | `{ from, emote }` |
 | `left` | `{ reason }`: you no longer hold a seat (`you_left`, `replaced`) |
 | `pong` | `{ serverTime }` |
 | `error` | `{ code, message }` |

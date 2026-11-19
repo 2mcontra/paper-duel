@@ -16,7 +16,7 @@ export function Landing() {
   return (
     <main className="page landing">
       <h1 className="title">Paper Duel</h1>
-      <p className="tagline">Open the book. Odd page, draw. Armed? Fire.</p>
+      <p className="tagline">Open the book. Odd page, draw. Armed? Pick who to shoot.</p>
 
       <label className="field">
         <span>Your name</span>
@@ -60,17 +60,23 @@ export function Landing() {
       <details className="howto">
         <summary>How to play</summary>
         <ol>
-          <li>Each player has 5 slots: 1, 3, 5, 7 and 9.</li>
+          <li>2 to 6 players. Everyone has 5 slots: 1, 3, 5, 7 and 9.</li>
           <li>
-            On your turn, open the book. The last digit of the page picks your slot. Even digits
-            mean no game.
+            Every round, everyone opens the book at the same time. The last digit of your page picks
+            your slot. Even digits mean no game.
           </li>
           <li>
             Each time a slot is picked you draw one more part: head, body, face, gun, bullets.
           </li>
-          <li>Pick an armed slot and it fires at the same slot on your opponent's side.</li>
-          <li>If their figure there has a gun, it is eliminated for good.</li>
-          <li>First to win 3 slot fights wins the duel.</li>
+          <li>
+            Pick an armed slot and you choose who to shoot. You hit their figure with the same
+            number if it has a gun.
+          </li>
+          <li>Lose 3 slots and you're out. The last player standing wins.</li>
+          <li>
+            Lucky pages (11, 22, 100, 111...) give cards: 🛡️ Shield, 💥 Double shot, 🧽 Eraser, 🔄
+            Swap and 🫳 Steal.
+          </li>
         </ol>
       </details>
     </main>

@@ -1,6 +1,6 @@
 # Paper Duel
 
-A 2-player browser version of the pen-and-paper stick-figure gun duel, with a virtual book. See [plan.md](plan.md).
+A 2 to 6 player browser version of the pen-and-paper stick-figure gun duel, with a virtual book, target picking and lucky cards. See [plan.md](plan.md).
 
 ## Layout
 
@@ -20,6 +20,6 @@ pnpm format:check  # Prettier
 pnpm typecheck     # tsc in every package
 pnpm test          # Vitest across all packages
 pnpm build         # builds the web client
-pnpm sim           # 10,000 bot games with balance stats
-pnpm dev           # server on :8787 and client on :5173 (open two tabs to play yourself)
+pnpm sim           # bot games for 2-6 players with balance stats
+pnpm dev           # server on :8787 and client on :5173 (open 2+ tabs to play yourself)
 ```

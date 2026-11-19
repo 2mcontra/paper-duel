@@ -5,8 +5,9 @@ A 2-player browser version of the pen-and-paper stick-figure gun duel, with a vi
 ## Layout
 
 - `packages/engine`: pure game logic (TypeScript, no I/O)
-- `apps/server`: authoritative game server (stub until M2)
-- `apps/web`: React + Vite client (placeholder until M3)
+- `packages/protocol`: WebSocket message schemas shared by server and client
+- `apps/server`: authoritative game server (Fastify + WebSocket)
+- `apps/web`: React + Vite client
 
 ## Commands
 
@@ -19,5 +20,6 @@ pnpm format:check  # Prettier
 pnpm typecheck     # tsc in every package
 pnpm test          # Vitest across all packages
 pnpm build         # builds the web client
-pnpm --filter @paper-duel/web dev
+pnpm sim           # 10,000 bot games with balance stats
+pnpm dev           # server on :8787 and client on :5173 (open two tabs to play yourself)
 ```

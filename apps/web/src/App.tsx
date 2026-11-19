@@ -1,11 +1,48 @@
-import { SLOT_NUMBERS } from "@paper-duel/engine";
+import { useEffect } from "react";
+import { Board } from "./screens/Board.js";
+import { Landing } from "./screens/Landing.js";
+import { Lobby } from "./screens/Lobby.js";
+import { connectGame, useGame } from "./store/game.js";
 
-// Placeholder screen. Landing, lobby and board arrive in M3.
 export function App() {
+  useEffect(() => connectGame(), []);
   return (
-    <main>
-      <h1>Paper Duel</h1>
-      <p>Slots: {SLOT_NUMBERS.join(", ")}</p>
-    </main>
+    <>
+      <ConnectionBanner />
+      <Screen />
+      <Toasts />
+    </>
+  );
+}
+
+function Screen() {
+  const room = useGame((s) => s.room);
+  const game = useGame((s) => s.game);
+  if (!room) return <Landing />;
+  if (room.phase === "lobby" || !game) return <Lobby />;
+  return <Board />;
+}
+
+function ConnectionBanner() {
+  const connection = useGame((s) => s.connection);
+  if (connection === "open") return null;
+  return (
+    <div className="conn-banner" role="status">
+      {connection === "connecting" ? "Connecting..." : "Connection lost. Reconnecting..."}
+    </div>
+  );
+}
+
+function Toasts() {
+  const toasts = useGame((s) => s.toasts);
+  const dismiss = useGame((s) => s.dismissToast);
+  return (
+    <div className="toasts" aria-live="polite">
+      {toasts.map((t) => (
+        <button key={t.id} className="toast" onClick={() => dismiss(t.id)}>
+          {t.message}
+        </button>
+      ))}
+    </div>
   );
 }

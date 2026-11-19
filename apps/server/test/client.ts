@@ -1,7 +1,7 @@
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import type { ClientMessage, ServerMessage } from "@paper-duel/protocol";
-import { createRng, randomPage, type GameState } from "@paper-duel/engine";
+import { createRng, isHidden, randomPage, type GameView } from "@paper-duel/engine";
 import { buildApp, type AppOptions } from "../src/app.js";
 
 type Msg<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
@@ -125,36 +125,71 @@ export async function startServer(opts: AppOptions = {}): Promise<TestServer> {
   };
 }
 
-/** Host creates a room, guest joins. Returns both clients after "joined". */
-export async function pair(server: TestServer, rules: Record<string, unknown> = {}) {
+/** Host creates a room and `count - 1` guests join. Returns clients in seat order. */
+export async function room(
+  server: TestServer,
+  count = 2,
+  rules: Record<string, unknown> = {},
+  maxPlayers = 6,
+) {
   const host = await server.connect();
-  const guest = await server.connect();
-  host.send({ type: "create_room", name: "Host", rules });
-  const { code, sessionToken: hostToken } = await host.next("joined");
-  guest.send({ type: "join_room", code: code.toLowerCase(), name: "Guest" });
-  const { sessionToken: guestToken } = await guest.next("joined");
-  return { host, guest, code, hostToken, guestToken };
+  host.send({ type: "create_room", name: "P0", rules, maxPlayers } as ClientMessage);
+  const joined = await host.next("joined");
+  const clients = [host];
+  const tokens = [joined.sessionToken];
+  for (let i = 1; i < count; i++) {
+    const c = await server.connect();
+    c.send({ type: "join_room", code: joined.code.toLowerCase(), name: `P${i}` });
+    tokens.push((await c.next("joined")).sessionToken);
+    clients.push(c);
+  }
+  return { clients, tokens, code: joined.code };
 }
 
-export async function startGame(server: TestServer, rules: Record<string, unknown> = {}) {
-  const p = await pair(server, { turnTimerSeconds: null, firstPlayer: "host", ...rules });
-  p.host.send({ type: "ready", ready: true });
-  p.guest.send({ type: "ready", ready: true });
-  const { game } = await p.host.next("game_started");
-  await p.guest.next("game_started");
-  return { ...p, game };
+/** Seats `count` players, readies everyone, and has the host start. Timer off unless given. */
+export async function startGame(
+  server: TestServer,
+  count = 2,
+  rules: Record<string, unknown> = {},
+) {
+  const r = await room(server, count, { roundTimerSeconds: null, firstPlayer: "host", ...rules });
+  for (const c of r.clients) c.send({ type: "ready", ready: true });
+  // A full room (6) starts by itself once everyone is ready; otherwise the host starts it.
+  if (count < 6) {
+    await r.clients[0]!.next("room_state", (m) => m.room.seats.every((s) => s.ready));
+    r.clients[0]!.send({ type: "start" });
+  }
+  const starts = await Promise.all(r.clients.map((c) => c.next("game_started")));
+  return { ...r, game: starts[0]!.game, views: starts.map((m) => m.game) };
 }
 
-/** Plays automatically: opens the book (or attacks) whenever it is this client's turn. */
-export function autoplay(client: TestClient, you: 0 | 1): void {
-  let game: GameState | null = null;
-  client.onMessage((m) => {
-    if (m.type === "game_started" || m.type === "turn_result" || m.type === "game_state") {
-      game = m.game;
-    } else if (m.type === "turn_timer" && m.player === you && game?.phase === "playing") {
-      client.send(
-        game.pendingChoice !== null ? { type: "choose", attack: true } : { type: "open_book" },
-      );
+/**
+ * Plays automatically: whenever this player's go is unfinished, opens the book, or aims at
+ * the first opponent still in.
+ */
+export function autoplay(client: TestClient, you: number, current?: GameView): void {
+  let lastKey = "";
+  const act = (game: GameView) => {
+    if (game.phase !== "playing") return;
+    const sub = game.pending[you];
+    if (!sub || isHidden(sub) || sub.done) return;
+    // Other players' updates also land here; don't resend for a step already sent.
+    const key = `${game.id}:${game.round}:${sub.pages.length}:${sub.needsTarget}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    if (sub.needsTarget) {
+      const want = sub.card?.card === "double_shot" ? 2 : 1;
+      const targets = game.players
+        .flatMap((p, i) => (i !== you && !p.out ? [i] : []))
+        .slice(0, want);
+      client.send({ type: "set_target", targets });
+    } else {
+      client.send({ type: "open_book" });
     }
+  };
+  client.onMessage((m) => {
+    if (m.type === "game_started" || m.type === "game_update" || m.type === "game_state")
+      act(m.game);
   });
+  if (current) act(current);
 }

@@ -1,21 +1,27 @@
 import {
   EngineError,
+  MAX_PLAYERS,
+  MIN_PLAYERS,
   RulesError,
   applyAction,
   createGame,
-  forfeit,
-  other,
+  redactEvent,
   resolveRules,
+  slotForPage,
+  suggestTargets,
+  viewFor,
   type Action,
+  type GameEvent,
   type GameState,
   type PlayerIndex,
   type RulesConfig,
   type RulesOverrides,
-  type TurnResult,
 } from "@paper-duel/engine";
 import {
   ClientMessage,
+  EMOTE_COOLDOWN_MS,
   PROTOCOL_VERSION,
+  type Emote,
   type ErrorCode,
   type RoomPhase,
   type RoomView,
@@ -46,20 +52,24 @@ interface Seat {
   conn: Connection | null;
   ready: boolean;
   wantsRematch: boolean;
+  /** Left during a game; the seat stays until the game ends so player indices don't move. */
+  left: boolean;
   graceTimer: Timer | null;
   graceDeadline: number | null;
+  lastEmoteAt: number;
 }
 
 interface Room {
   code: string;
   isPublic: boolean;
+  maxPlayers: number;
   phase: RoomPhase;
-  /** Seat 0 is the host and is always filled while the room exists. */
-  seats: [Seat | null, Seat | null];
+  /** Seat 0 is the host. During a game, seat index = player index in the game. */
+  seats: Seat[];
   rules: RulesConfig;
   game: GameState | null;
-  turnTimer: Timer | null;
-  turnDeadline: number | null;
+  roundTimer: Timer | null;
+  roundDeadline: number | null;
 }
 
 class ClientError extends Error {
@@ -107,7 +117,6 @@ export class RoomManager {
     seat.conn = null;
     seat.graceDeadline = this.opts.now() + this.opts.graceMs;
     seat.graceTimer = setTimeout(() => this.onGraceExpired(seat), this.opts.graceMs);
-    this.notifyOpponentStatus(seat);
     this.broadcastRoom(seat.room);
   }
 
@@ -147,8 +156,8 @@ export class RoomManager {
   /** Clears every timer. Call on server shutdown. */
   shutdown(): void {
     for (const room of this.rooms.values()) {
-      this.clearTurnTimer(room);
-      for (const seat of room.seats) if (seat?.graceTimer) clearTimeout(seat.graceTimer);
+      this.clearRoundTimer(room);
+      for (const seat of room.seats) if (seat.graceTimer) clearTimeout(seat.graceTimer);
     }
     this.rooms.clear();
     this.sessions.clear();
@@ -160,23 +169,39 @@ export class RoomManager {
     switch (msg.type) {
       case "ping":
         return conn.send({ type: "pong", serverTime: this.opts.now() });
-      case "create_room":
+      case "create_room": {
         this.requireNoSeat(conn);
-        return this.seatIn(conn, this.createRoom(resolveRules(msg.rules ?? {}), false), msg.name);
+        const room = this.createRoom(
+          resolveRules(msg.rules ?? {}),
+          msg.maxPlayers ?? MAX_PLAYERS,
+          false,
+        );
+        return this.seatIn(conn, room, msg.name);
+      }
       case "join_room":
         return this.joinRoom(conn, msg.code, msg.name);
       case "quick_match":
         return this.quickMatch(conn, msg.name);
       case "resume":
         return this.resume(conn, msg.sessionToken);
-      case "set_rules":
-        return this.setRules(conn, msg.rules);
+      case "configure":
+        return this.configure(conn, msg.rules, msg.maxPlayers);
       case "ready":
         return this.setReady(conn, msg.ready);
+      case "start":
+        return this.start(conn);
+      case "play_card":
+        return this.gameAction(conn, (player) => ({ type: "play_card", player, play: msg.play }));
       case "open_book":
-        return this.playerAction(conn, "open_book");
-      case "choose":
-        return this.playerAction(conn, "choose", msg.attack);
+        return this.gameAction(conn, (player, room) => this.openBookAction(room, player));
+      case "set_target":
+        return this.gameAction(conn, (player) => ({
+          type: "set_target",
+          player,
+          targets: msg.targets,
+        }));
+      case "emote":
+        return this.emote(conn, msg.emote);
       case "rematch":
         return this.rematch(conn);
       case "leave": {
@@ -197,9 +222,9 @@ export class RoomManager {
       conn.failedJoins++;
       throw new ClientError("room_not_found", `No room with code ${code}`);
     }
-    if (room.phase !== "lobby" || room.seats[1]) {
+    if (room.phase !== "lobby") throw new ClientError("room_full", "That game has already started");
+    if (room.seats.length >= room.maxPlayers)
       throw new ClientError("room_full", "That room is full");
-    }
     this.seatIn(conn, room, name);
   }
 
@@ -207,12 +232,12 @@ export class RoomManager {
     this.requireNoSeat(conn);
     let room: Room | undefined;
     for (const r of this.rooms.values()) {
-      if (r.isPublic && r.phase === "lobby" && !r.seats[1] && r.seats[0]?.conn) {
+      if (r.isPublic && r.phase === "lobby" && r.seats.length < r.maxPlayers && r.seats[0]?.conn) {
         room = r;
         break;
       }
     }
-    this.seatIn(conn, room ?? this.createRoom(resolveRules(), true), name);
+    this.seatIn(conn, room ?? this.createRoom(resolveRules(), MAX_PLAYERS, true), name);
   }
 
   private resume(conn: Connection, token: string): void {
@@ -235,164 +260,237 @@ export class RoomManager {
 
     const room = seat.room;
     const you = this.indexOf(seat);
-    conn.send({
-      type: "joined",
-      protocol: PROTOCOL_VERSION,
-      sessionToken: seat.token,
-      you,
-      code: room.code,
-    });
+    this.sendJoined(seat);
     conn.send({ type: "room_state", room: this.view(room) });
-    if (room.game) conn.send({ type: "game_state", game: room.game });
+    if (room.game) conn.send({ type: "game_state", game: viewFor(room.game, you) });
     if (room.phase === "playing" && room.game) {
-      conn.send({ type: "turn_timer", player: room.game.turn, deadline: room.turnDeadline });
-    }
-    const opp = room.seats[other(you)];
-    if (opp) {
-      conn.send({
-        type: "opponent_status",
-        connected: opp.conn !== null,
-        graceDeadline: opp.graceDeadline,
-      });
+      conn.send({ type: "round_timer", round: room.game.round, deadline: room.roundDeadline });
     }
     if (wasDisconnected) {
-      this.notifyOpponentStatus(seat);
       this.broadcastRoom(room, seat);
       this.maybeStart(room);
     }
   }
 
-  private setRules(conn: Connection, overrides: RulesOverrides): void {
+  private configure(
+    conn: Connection,
+    overrides: RulesOverrides | undefined,
+    maxPlayers: number | undefined,
+  ): void {
     const seat = this.requireSeat(conn);
     const room = seat.room;
     if (this.indexOf(seat) !== 0)
-      throw new ClientError("not_host", "Only the host can change rules");
+      throw new ClientError("not_host", "Only the host can change the setup");
     this.requirePhase(room, "lobby");
-    room.rules = resolveRules({ ...room.rules, ...overrides });
-    for (const s of room.seats) if (s) s.ready = false;
+    if (maxPlayers !== undefined) {
+      if (maxPlayers < room.seats.length) {
+        throw new ClientError("bad_rules", `${room.seats.length} players are already here`);
+      }
+      room.maxPlayers = maxPlayers;
+    }
+    if (overrides) room.rules = resolveRules({ ...room.rules, ...overrides });
+    for (const s of room.seats) s.ready = false;
     this.broadcastRoom(room);
   }
 
   private setReady(conn: Connection, ready: boolean): void {
     const seat = this.requireSeat(conn);
-    const room = seat.room;
-    this.requirePhase(room, "lobby");
+    this.requirePhase(seat.room, "lobby");
     seat.ready = ready;
-    this.broadcastRoom(room);
-    this.maybeStart(room);
+    this.broadcastRoom(seat.room);
+    this.maybeStart(seat.room);
+  }
+
+  /** Host starts the game: 2+ players, everyone connected and ready. */
+  private start(conn: Connection): void {
+    const seat = this.requireSeat(conn);
+    const room = seat.room;
+    if (this.indexOf(seat) !== 0) throw new ClientError("not_host", "Only the host can start");
+    this.requirePhase(room, "lobby");
+    if (room.seats.length < MIN_PLAYERS) {
+      throw new ClientError("not_ready", `Need at least ${MIN_PLAYERS} players`);
+    }
+    if (!room.seats.every((s) => s.ready && s.conn)) {
+      throw new ClientError("not_ready", "Everyone must be ready");
+    }
+    this.startGame(room);
   }
 
   private rematch(conn: Connection): void {
     const seat = this.requireSeat(conn);
-    const room = seat.room;
-    this.requirePhase(room, "finished");
+    this.requirePhase(seat.room, "finished");
     seat.wantsRematch = true;
-    this.broadcastRoom(room);
-    this.maybeStart(room);
+    this.broadcastRoom(seat.room);
+    this.maybeStart(seat.room);
   }
 
-  /** Starts a game once both seats are connected and agree (ready in the lobby, rematch after). */
+  /**
+   * Starts without the host pressing Start when it's unambiguous: a full lobby where everyone
+   * is ready, or a finished game where everyone still here wants a rematch.
+   */
   private maybeStart(room: Room): void {
-    const agreed = (s: Seat | null) =>
-      s?.conn && (room.phase === "lobby" ? s.ready : room.phase === "finished" && s.wantsRematch);
-    if (agreed(room.seats[0]) && agreed(room.seats[1])) this.startGame(room);
+    const all = (f: (s: Seat) => boolean) =>
+      room.seats.length >= MIN_PLAYERS && room.seats.every((s) => s.conn && f(s));
+    if (room.phase === "lobby" && room.seats.length === room.maxPlayers && all((s) => s.ready)) {
+      this.startGame(room);
+    } else if (room.phase === "finished" && all((s) => s.wantsRematch)) {
+      this.startGame(room);
+    }
   }
 
-  private playerAction(conn: Connection, type: "open_book" | "choose", attack = false): void {
+  private emote(conn: Connection, emote: Emote): void {
     const seat = this.requireSeat(conn);
-    const room = seat.room;
-    this.requirePhase(room, "playing");
-    const game = room.game!;
-    if (game.turn !== this.indexOf(seat))
-      throw new ClientError("not_your_turn", "Wait for your turn");
-    if (type === "open_book" && game.pendingChoice !== null) {
-      throw new ClientError("illegal_action", "Choose whether to attack first");
-    }
-    if (type === "choose" && game.pendingChoice === null) {
-      throw new ClientError("illegal_action", "There is no attack to choose");
-    }
-    this.act(
-      room,
-      type === "open_book" ? this.rollAction(room) : { type: "choose", attack },
-      false,
-    );
+    const now = this.opts.now();
+    if (now - seat.lastEmoteAt < EMOTE_COOLDOWN_MS) return; // silently drop spam
+    seat.lastEmoteAt = now;
+    this.broadcast(seat.room, { type: "emote", from: this.indexOf(seat), emote });
   }
 
   // ---------- game flow ----------
 
-  private rollAction(room: Room): Action {
-    return { type: "open_book", page: this.opts.randomPage(room.game!.rules.totalPages) };
+  private gameAction(conn: Connection, build: (player: PlayerIndex, room: Room) => Action): void {
+    const seat = this.requireSeat(conn);
+    const room = seat.room;
+    this.requirePhase(room, "playing");
+    this.apply(room, [build(this.indexOf(seat), room)], []);
+  }
+
+  private openBookAction(room: Room, player: PlayerIndex): Action {
+    // Check first, so a refused request doesn't draw a page from the book.
+    const sub = room.game!.pending[player];
+    if (!sub || sub.done || sub.needsTarget) {
+      throw new ClientError("illegal_action", "You already opened the book this round");
+    }
+    return {
+      type: "open_book",
+      player,
+      page: this.opts.randomPage(room.game!.rules.totalPages),
+      luck: this.opts.randomInt(1_000_000),
+    };
   }
 
   private startGame(room: Room): void {
-    const [a, b] = room.seats as [Seat, Seat];
-    const firstTurn: PlayerIndex =
-      room.rules.firstPlayer === "host" ? 0 : this.opts.randomInt(2) === 0 ? 0 : 1;
+    const seats = room.seats;
+    const firstSeat = room.rules.firstPlayer === "host" ? 0 : this.opts.randomInt(seats.length);
     room.game = createGame({
       id: newId(),
-      players: [
-        { id: a.playerId, name: a.name },
-        { id: b.playerId, name: b.name },
-      ],
-      firstTurn,
+      players: seats.map((s) => ({ id: s.playerId, name: s.name })),
+      firstSeat,
       rules: room.rules,
     });
     room.phase = "playing";
-    for (const s of [a, b]) {
+    for (const s of seats) {
       s.ready = false;
       s.wantsRematch = false;
     }
-    this.broadcast(room, { type: "game_started", game: room.game });
+    for (const [i, s] of seats.entries()) {
+      s.conn?.send({ type: "game_started", game: viewFor(room.game, i) });
+    }
     this.broadcastRoom(room);
-    this.startTurnTimer(room);
+    this.startRoundTimer(room);
   }
 
-  private act(room: Room, action: Action, auto: boolean): void {
-    this.apply(room, applyAction(room.game!, action), auto);
-  }
-
-  private apply(room: Room, result: TurnResult, auto: boolean): void {
-    room.game = result.state;
-    this.broadcast(room, { type: "turn_result", events: result.events, game: result.state, auto });
-    if (result.state.phase === "finished") this.endGame(room);
-    else this.startTurnTimer(room);
+  /**
+   * Applies actions in order and sends one update with all their events.
+   * The first action may throw (a player's illegal move); nothing is applied then.
+   */
+  private apply(room: Room, actions: Action[], auto: PlayerIndex[]): void {
+    let game = room.game!;
+    const events: GameEvent[] = [];
+    const roundBefore = game.round;
+    for (const action of actions) {
+      if (game.phase !== "playing") break;
+      const r = applyAction(game, action);
+      game = r.state;
+      events.push(...r.events);
+    }
+    room.game = game;
+    room.seats.forEach((s, i) => {
+      s.conn?.send({
+        type: "game_update",
+        events: events.map((e) => redactEvent(e, i)),
+        game: viewFor(game, i),
+        auto,
+      });
+    });
+    if (game.phase === "finished") this.endGame(room);
+    else if (game.round !== roundBefore) this.startRoundTimer(room);
   }
 
   private endGame(room: Room): void {
-    this.clearTurnTimer(room);
+    this.clearRoundTimer(room);
     const game = room.game!;
     room.phase = "finished";
-    this.broadcast(room, { type: "game_over", winner: game.winner, reason: game.endReason, game });
+    room.seats.forEach((s, i) => {
+      s.conn?.send({
+        type: "game_over",
+        winner: game.winner,
+        reason: game.endReason,
+        game: viewFor(game, i),
+      });
+    });
+    // Seats of players who left mid-game can go now; indices no longer matter.
+    if (room.seats.some((s) => s.left)) {
+      room.seats = room.seats.filter((s) => !s.left);
+      for (const s of room.seats) this.sendJoined(s);
+      room.game = null;
+    }
+    if (room.seats.length === 0) return this.deleteRoom(room);
+    if (room.seats.length < MIN_PLAYERS) this.backToLobby(room);
     this.broadcastRoom(room);
   }
 
-  /** Restarts the timer after every action, so each decision gets the full time. */
-  private startTurnTimer(room: Room): void {
-    this.clearTurnTimer(room);
+  private startRoundTimer(room: Room): void {
+    this.clearRoundTimer(room);
     const game = room.game!;
-    const seconds = game.rules.turnTimerSeconds;
+    const seconds = game.rules.roundTimerSeconds;
     if (seconds !== null) {
       const ms = seconds * this.opts.secondMs;
-      room.turnDeadline = this.opts.now() + ms;
-      room.turnTimer = setTimeout(() => this.onTurnTimeout(room), ms);
+      room.roundDeadline = this.opts.now() + ms;
+      room.roundTimer = setTimeout(() => this.onRoundTimeout(room), ms);
     }
-    this.broadcast(room, { type: "turn_timer", player: game.turn, deadline: room.turnDeadline });
+    this.broadcast(room, { type: "round_timer", round: game.round, deadline: room.roundDeadline });
   }
 
-  private clearTurnTimer(room: Room): void {
-    if (room.turnTimer) clearTimeout(room.turnTimer);
-    room.turnTimer = null;
-    room.turnDeadline = null;
+  private clearRoundTimer(room: Room): void {
+    if (room.roundTimer) clearTimeout(room.roundTimer);
+    room.roundTimer = null;
+    room.roundDeadline = null;
   }
 
-  /** Time ran out: act for the player. A pending R3 choice defaults to attacking. */
-  private onTurnTimeout(room: Room): void {
-    room.turnTimer = null;
-    const game = room.game;
-    if (room.phase !== "playing" || !game) return;
-    const action: Action =
-      game.pendingChoice !== null ? { type: "choose", attack: true } : this.rollAction(room);
-    this.act(room, action, true);
+  /** Time ran out: finish every unfinished go (open the book, aim at the best target). */
+  private onRoundTimeout(room: Room): void {
+    room.roundTimer = null;
+    if (room.phase !== "playing" || !room.game) return;
+    const round = room.game.round;
+    const auto: PlayerIndex[] = [];
+    let game = room.game;
+    const actions: Action[] = [];
+    // Plan each player's remaining steps one at a time against the evolving state.
+    for (let p = 0; p < game.players.length; p++) {
+      let guard = 0;
+      while (
+        game.round === round &&
+        game.phase === "playing" &&
+        game.pending[p] &&
+        !game.pending[p]!.done
+      ) {
+        if (guard++ > 50) break; // R6 rerolls: a book with all-dead slots can't loop forever
+        const sub = game.pending[p]!;
+        let action: Action;
+        if (sub.needsTarget) {
+          const n = slotForPage(sub.pages.at(-1)!)!;
+          const want = sub.card?.card === "double_shot" ? 2 : 1;
+          action = { type: "set_target", player: p, targets: suggestTargets(game, p, n, want) };
+        } else {
+          action = this.openBookAction(room, p);
+        }
+        if (!auto.includes(p)) auto.push(p);
+        actions.push(action);
+        game = applyAction(game, action).state;
+      }
+    }
+    if (actions.length) this.apply(room, actions, auto);
   }
 
   private onGraceExpired(seat: Seat): void {
@@ -403,7 +501,7 @@ export class RoomManager {
 
   // ---------- rooms and seats ----------
 
-  private createRoom(rules: RulesConfig, isPublic: boolean): Room {
+  private createRoom(rules: RulesConfig, maxPlayers: number, isPublic: boolean): Room {
     if (this.rooms.size >= this.opts.maxRooms) {
       throw new ClientError("server_full", "The server is full; try again soon");
     }
@@ -413,19 +511,34 @@ export class RoomManager {
     const room: Room = {
       code,
       isPublic,
+      maxPlayers,
       phase: "lobby",
-      seats: [null, null],
+      seats: [],
       rules,
       game: null,
-      turnTimer: null,
-      turnDeadline: null,
+      roundTimer: null,
+      roundDeadline: null,
     };
     this.rooms.set(code, room);
     return room;
   }
 
+  private deleteRoom(room: Room): void {
+    this.clearRoundTimer(room);
+    this.rooms.delete(room.code);
+  }
+
+  private backToLobby(room: Room): void {
+    this.clearRoundTimer(room);
+    room.phase = "lobby";
+    room.game = null;
+    for (const s of room.seats) {
+      s.ready = false;
+      s.wantsRematch = false;
+    }
+  }
+
   private seatIn(conn: Connection, room: Room, name: string): void {
-    const index: PlayerIndex = room.seats[0] ? 1 : 0;
     const seat: Seat = {
       playerId: newId(),
       name,
@@ -434,68 +547,68 @@ export class RoomManager {
       conn,
       ready: false,
       wantsRematch: false,
+      left: false,
       graceTimer: null,
       graceDeadline: null,
+      lastEmoteAt: 0,
     };
-    room.seats[index] = seat;
+    room.seats.push(seat);
     conn.seat = seat;
     this.sessions.set(seat.token, seat);
-    conn.send({
-      type: "joined",
-      protocol: PROTOCOL_VERSION,
-      sessionToken: seat.token,
-      you: index,
-      code: room.code,
-    });
+    this.sendJoined(seat);
     this.broadcastRoom(room);
-    if (index === 1) this.notifyOpponentStatus(seat);
   }
 
   /**
-   * A player leaves for good (left, or grace ran out). A game in progress is forfeited.
-   * The other player, if any, becomes host of a fresh lobby in the same room.
+   * A player leaves for good (left, or reconnect time ran out). In a game they are knocked out
+   * and their seat stays until it ends; otherwise the seat goes and later seats move up.
    */
   private removeSeat(seat: Seat): void {
     const room = seat.room;
-    const index = this.indexOf(seat);
     if (seat.graceTimer) clearTimeout(seat.graceTimer);
     seat.graceTimer = null;
+    seat.graceDeadline = null;
     this.sessions.delete(seat.token);
     // Detach first so the leaver gets nothing after "left".
     if (seat.conn) seat.conn.seat = null;
     seat.conn = null;
-    if (room.phase === "playing" && room.game) {
-      this.apply(room, forfeit(room.game, index), false);
-    }
 
-    const remaining = room.seats[other(index)];
-    if (!remaining) {
-      this.clearTurnTimer(room);
-      this.rooms.delete(room.code);
+    if (room.phase === "playing" && room.game) {
+      seat.left = true;
+      const p = this.indexOf(seat);
+      if (!room.game.players[p]!.out) this.apply(room, [{ type: "leave", player: p }], []);
+      if (room.phase === "playing") this.broadcastRoom(room);
       return;
     }
-    room.seats = [remaining, null];
-    room.phase = "lobby";
-    room.game = null;
-    remaining.ready = false;
-    remaining.wantsRematch = false;
-    if (remaining.conn) {
-      // Their index may have changed from 1 to 0.
-      remaining.conn.send({
-        type: "joined",
-        protocol: PROTOCOL_VERSION,
-        sessionToken: remaining.token,
-        you: 0,
-        code: room.code,
-      });
+
+    const index = room.seats.indexOf(seat);
+    room.seats.splice(index, 1);
+    if (room.seats.length === 0) return this.deleteRoom(room);
+    for (const s of room.seats.slice(index)) this.sendJoined(s); // their index moved up
+    if (room.phase === "finished") {
+      room.game = null;
+      if (room.seats.length < MIN_PLAYERS) this.backToLobby(room);
+    } else {
+      for (const s of room.seats) s.ready = false;
     }
     this.broadcastRoom(room);
+    this.maybeStart(room);
   }
 
   // ---------- helpers ----------
 
   private indexOf(seat: Seat): PlayerIndex {
-    return seat.room.seats[0] === seat ? 0 : 1;
+    return seat.room.seats.indexOf(seat);
+  }
+
+  private sendJoined(seat: Seat): void {
+    seat.conn?.send({
+      type: "joined",
+      protocol: PROTOCOL_VERSION,
+      sessionToken: seat.token,
+      you: this.indexOf(seat),
+      code: seat.room.code,
+    });
   }
 
   private requireSeat(conn: Connection): Seat {
@@ -514,37 +627,29 @@ export class RoomManager {
   }
 
   private view(room: Room): RoomView {
-    const seatView = (s: Seat | null) =>
-      s && {
+    return {
+      code: room.code,
+      phase: room.phase,
+      maxPlayers: room.maxPlayers,
+      seats: room.seats.map((s) => ({
         name: s.name,
         ready: s.ready,
         connected: s.conn !== null,
         wantsRematch: s.wantsRematch,
-      };
-    return {
-      code: room.code,
-      phase: room.phase,
-      seats: [seatView(room.seats[0]), seatView(room.seats[1])],
+        left: s.left,
+        graceDeadline: s.graceDeadline,
+      })),
       rules: room.rules,
       isPublic: room.isPublic,
     };
   }
 
   private broadcast(room: Room, msg: ServerMessage, except?: Seat): void {
-    for (const s of room.seats) if (s?.conn && s !== except) s.conn.send(msg);
+    for (const s of room.seats) if (s.conn && s !== except) s.conn.send(msg);
   }
 
   private broadcastRoom(room: Room, except?: Seat): void {
     this.broadcast(room, { type: "room_state", room: this.view(room) }, except);
-  }
-
-  private notifyOpponentStatus(seat: Seat): void {
-    const opp = seat.room.seats[other(this.indexOf(seat))];
-    opp?.conn?.send({
-      type: "opponent_status",
-      connected: seat.conn !== null,
-      graceDeadline: seat.graceDeadline,
-    });
   }
 
   private sendError(conn: Connection, code: ErrorCode, message: string): void {

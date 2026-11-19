@@ -158,7 +158,8 @@ export type ServerMessage =
   /** Snapshot of the current game, sent when you resume. Not a new game. */
   | { type: "game_state"; game: GameView }
   /**
-   * Something happened: new events (redacted for you) and the updated game. `auto` lists
+   * Something happened: new events (redacted for you) and the updated game. To save bandwidth
+   * `game.log` is empty here: append `events` to the log you already have. `auto` lists
    * players the server acted for because the round timer ran out.
    */
   | { type: "game_update"; events: GameEvent[]; game: GameView; auto: PlayerIndex[] }
@@ -166,8 +167,9 @@ export type ServerMessage =
   | { type: "round_timer"; round: number; deadline: number | null }
   | { type: "game_over"; winner: PlayerIndex | null; reason: GameView["endReason"]; game: GameView }
   | { type: "emote"; from: PlayerIndex; emote: Emote }
-  /** You no longer hold a seat: you left, or your session was resumed on another connection. */
-  | { type: "left"; reason: "you_left" | "replaced" }
+  /** You no longer hold a seat: you left, your session was resumed on another connection, or
+   * the room was closed after a long time with no activity. */
+  | { type: "left"; reason: "you_left" | "replaced" | "idle" }
   | { type: "pong"; serverTime: number }
   | { type: "error"; code: ErrorCode; message: string };
 

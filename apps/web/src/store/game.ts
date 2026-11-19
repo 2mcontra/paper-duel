@@ -1,10 +1,11 @@
 import { create } from "zustand";
-import type {
-  CardPlay,
-  GameEvent,
-  GameView,
-  PlayerIndex,
-  RulesOverrides,
+import {
+  LOG_TAIL,
+  type CardPlay,
+  type GameEvent,
+  type GameView,
+  type PlayerIndex,
+  type RulesOverrides,
 } from "@paper-duel/engine";
 import type {
   ClientMessage,
@@ -219,7 +220,14 @@ export const useGame = create<GameStore>()((set, get) => {
         return set({ game: msg.game, busy: false });
       case "game_update": {
         const before = get().game;
-        set({ game: msg.game, lastEvents: msg.events, lastAuto: msg.auto, busy: false });
+        // Updates don't resend the log; extend the one we have.
+        const log = [...(before?.log ?? []), ...msg.events].slice(-LOG_TAIL);
+        set({
+          game: { ...msg.game, log },
+          lastEvents: msg.events,
+          lastAuto: msg.auto,
+          busy: false,
+        });
         if (before && needsReveal(msg.events)) startReveal(before, msg.events);
         return;
       }
@@ -241,6 +249,8 @@ export const useGame = create<GameStore>()((set, get) => {
         finishReveal();
         socket?.setToken(null);
         if (msg.reason === "replaced") toast("info", "This game was opened in another tab.");
+        if (msg.reason === "idle")
+          toast("info", "The room was closed because nobody played for a while.");
         return set(SEATLESS);
       case "pong":
         return set({ clockOffset: msg.serverTime - Date.now() });

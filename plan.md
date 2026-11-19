@@ -315,6 +315,15 @@ Players see absolute indices plus `you`; the client puts `you` on the left.
 - Playwright end-to-end test with two browser contexts, including a disconnect and reconnect scenario.
 - Load test: 200 concurrent rooms.
 
+**M5 results** (4-core cloud VM, server and load generator on the same machine, bots thinking 0.3 to 2 s per action):
+
+| Load | Actions/s | Action round-trip p50 / p99 | Event-loop lag p99 | Memory peak | Bandwidth out |
+|------|-----------|-----------------------------|--------------------|-------------|---------------|
+| 200 rooms x 3 players | 367 | 0.4 / 1.2 ms | 1 ms | 130 MB | 2.2 MB/s |
+| 200 rooms x 6 players | 659 | 0.5 / 3.7 ms | 2 ms | 179 MB | 12.7 MB/s |
+
+Updates used to resend the last 200 log events every time (6.9 KB a message). They now carry only new events (1.4 to 2.7 KB), which cut bandwidth by about 80%. With bots answering instantly the per-connection rate limit kicks in as intended; the server still handled about 1,700 actions a second. Run it with `pnpm --filter @paper-duel/server loadtest`.
+
 ### M6: Deploy (1 day)
 - Multi-stage Dockerfile (build client, run server).
 - Reverse proxy config with TLS and WebSocket upgrade headers.
@@ -339,7 +348,10 @@ Players see absolute indices plus `you`; the client puts `you` on the left.
 - **Room codes:** 5 or 6 characters from an unambiguous alphabet (no 0/O, 1/I), with attempt limiting to prevent brute-force joining.
 - **Session tokens:** random 128-bit values, never reused across games.
 - **Input limits:** player names are length-limited and sanitised (React escapes by default, but still strip control characters).
-- **DoS controls:** per-IP connection cap, per-socket message rate limit, max payload size, idle timeouts.
+- **DoS controls:** per-IP connection cap (20), per-socket message rate limit (10/s, burst 20), max frame size (4 KB), WebSocket heartbeat that drops dead connections, idle rooms closed after 30 minutes (finished games after 10), and a cap on rooms (1000).
+- **Brute-force joins:** 10 failed codes per connection and 30 per IP per 10 minutes, against 31^5 (about 28.6 million) possible codes.
+- **Crash safety:** errors in timers (round timer, reconnect grace, idle sweep) are logged instead of taking the server down.
+- **Deployment settings:** `ALLOWED_ORIGINS` (comma-separated; WebSocket upgrades from other origins get 403), `TRUST_PROXY=true` behind a reverse proxy so per-IP limits see real client IPs, `MAX_ROOMS`, `MAX_CONNECTIONS_PER_IP`.
 - **Transport:** TLS only in production (`wss://`).
 - **Privacy:** no accounts or personal data in the MVP, only a display name and an ephemeral session.
 

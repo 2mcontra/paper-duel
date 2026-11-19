@@ -1147,3 +1147,9 @@ select {
     display: none;
   }
 }
+
+.leave-game {
+  margin: 0 0 8px;
+  padding-left: 0;
+  color: var(--ink-soft);
+}

@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import type { ClientMessage, ServerMessage } from "@paper-duel/protocol";
 import { createRng, isHidden, randomPage, type GameView } from "@paper-duel/engine";
 import { buildApp, type AppOptions } from "../src/app.js";
+import type { RoomManager } from "../src/rooms.js";
 
 type Msg<T extends ServerMessage["type"]> = Extract<ServerMessage, { type: T }>;
 
@@ -21,8 +22,8 @@ export class TestClient {
     });
   }
 
-  static connect(url: string): Promise<TestClient> {
-    const ws = new WebSocket(url);
+  static connect(url: string, options: WebSocket.ClientOptions = {}): Promise<TestClient> {
+    const ws = new WebSocket(url, options);
     return new Promise((resolve, reject) => {
       ws.once("open", () => resolve(new TestClient(ws)));
       ws.once("error", reject);
@@ -91,14 +92,22 @@ export interface TestServer {
   /** Pages the book returns next, in order; after that, seeded random pages. */
   pages: number[];
   clients: TestClient[];
-  connect(): Promise<TestClient>;
+  manager: RoomManager;
+  /** Added to the server's clock; move it forward to make time pass. */
+  clock: { offset: number };
+  connect(options?: WebSocket.ClientOptions): Promise<TestClient>;
   close(): Promise<void>;
 }
 
 export async function startServer(opts: AppOptions = {}): Promise<TestServer> {
   const pages: number[] = [];
   const rng = createRng(99);
-  const { app } = await buildApp({
+  const clock = { offset: 0 };
+  const { app, manager } = await buildApp({
+    now: () => Date.now() + clock.offset,
+    onError: (err) => {
+      throw err;
+    },
     graceMs: 200,
     secondMs: 10,
     randomPage: (total) => pages.shift() ?? randomPage(total, rng),
@@ -113,8 +122,10 @@ export async function startServer(opts: AppOptions = {}): Promise<TestServer> {
     baseUrl: `http://127.0.0.1:${port}`,
     pages,
     clients,
-    async connect() {
-      const c = await TestClient.connect(`ws://127.0.0.1:${port}/ws`);
+    manager,
+    clock,
+    async connect(options) {
+      const c = await TestClient.connect(`ws://127.0.0.1:${port}/ws`, options);
       clients.push(c);
       return c;
     },

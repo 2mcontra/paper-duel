@@ -36,6 +36,8 @@ type Timer = ReturnType<typeof setTimeout>;
 /** One WebSocket connection, as the room manager sees it. */
 export interface Connection {
   readonly id: string;
+  /** Client IP, for per-IP limits. */
+  readonly ip: string;
   send(msg: ServerMessage): void;
   seat: Seat | null;
   failedJoins: number;
@@ -70,6 +72,8 @@ interface Room {
   game: GameState | null;
   roundTimer: Timer | null;
   roundDeadline: number | null;
+  /** Last time a player did anything here (for closing idle rooms). */
+  lastActivity: number;
 }
 
 class ClientError extends Error {
@@ -84,9 +88,24 @@ class ClientError extends Error {
 export class RoomManager {
   private readonly rooms = new Map<string, Room>();
   private readonly sessions = new Map<string, Seat>();
+  /** Failed join attempts per IP in the current window. */
+  private readonly failedJoinsByIp = new Map<string, { count: number; resetAt: number }>();
   private connectionCount = 0;
+  private readonly sweeper: ReturnType<typeof setInterval>;
 
-  constructor(private readonly opts: ServerOptions) {}
+  constructor(private readonly opts: ServerOptions) {
+    this.sweeper = setInterval(() => this.guard("sweep", () => this.sweep()), opts.sweepMs);
+    this.sweeper.unref?.();
+  }
+
+  /** Runs a callback that has no caller to throw to (timers), logging instead of crashing. */
+  private guard(where: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (err) {
+      this.opts.onError(err, where);
+    }
+  }
 
   get stats() {
     let playing = 0;
@@ -96,10 +115,11 @@ export class RoomManager {
 
   // ---------- connection lifecycle ----------
 
-  connect(send: (msg: ServerMessage) => void): Connection {
+  connect(send: (msg: ServerMessage) => void, ip = "unknown"): Connection {
     this.connectionCount++;
     return {
       id: newId(),
+      ip,
       send,
       seat: null,
       failedJoins: 0,
@@ -116,7 +136,10 @@ export class RoomManager {
     if (!seat || seat.conn !== conn) return;
     seat.conn = null;
     seat.graceDeadline = this.opts.now() + this.opts.graceMs;
-    seat.graceTimer = setTimeout(() => this.onGraceExpired(seat), this.opts.graceMs);
+    seat.graceTimer = setTimeout(
+      () => this.guard("grace timer", () => this.onGraceExpired(seat)),
+      this.opts.graceMs,
+    );
     this.broadcastRoom(seat.room);
   }
 
@@ -155,6 +178,7 @@ export class RoomManager {
 
   /** Clears every timer. Call on server shutdown. */
   shutdown(): void {
+    clearInterval(this.sweeper);
     for (const room of this.rooms.values()) {
       this.clearRoundTimer(room);
       for (const seat of room.seats) if (seat.graceTimer) clearTimeout(seat.graceTimer);
@@ -166,6 +190,7 @@ export class RoomManager {
   // ---------- message handlers ----------
 
   private dispatch(conn: Connection, msg: ClientMessage): void {
+    if (conn.seat && msg.type !== "ping") conn.seat.room.lastActivity = this.opts.now();
     switch (msg.type) {
       case "ping":
         return conn.send({ type: "pong", serverTime: this.opts.now() });
@@ -214,12 +239,22 @@ export class RoomManager {
 
   private joinRoom(conn: Connection, code: string, name: string): void {
     this.requireNoSeat(conn);
-    if (conn.failedJoins >= this.opts.maxFailedJoins) {
-      throw new ClientError("too_many_attempts", "Too many failed join attempts");
+    const now = this.opts.now();
+    let byIp = this.failedJoinsByIp.get(conn.ip);
+    if (!byIp || byIp.resetAt <= now) {
+      byIp = { count: 0, resetAt: now + this.opts.joinWindowMs };
+      this.failedJoinsByIp.set(conn.ip, byIp);
+    }
+    if (
+      conn.failedJoins >= this.opts.maxFailedJoins ||
+      byIp.count >= this.opts.maxFailedJoinsPerIp
+    ) {
+      throw new ClientError("too_many_attempts", "Too many failed join attempts; try again later");
     }
     const room = this.rooms.get(code);
     if (!room) {
       conn.failedJoins++;
+      byIp.count++;
       throw new ClientError("room_not_found", `No room with code ${code}`);
     }
     if (room.phase !== "lobby") throw new ClientError("room_full", "That game has already started");
@@ -409,7 +444,7 @@ export class RoomManager {
       s.conn?.send({
         type: "game_update",
         events: events.map((e) => redactEvent(e, i)),
-        game: viewFor(game, i),
+        game: viewFor(game, i, 0), // the log isn't resent; clients append `events`
         auto,
       });
     });
@@ -447,7 +482,10 @@ export class RoomManager {
     if (seconds !== null) {
       const ms = seconds * this.opts.secondMs;
       room.roundDeadline = this.opts.now() + ms;
-      room.roundTimer = setTimeout(() => this.onRoundTimeout(room), ms);
+      room.roundTimer = setTimeout(
+        () => this.guard("round timer", () => this.onRoundTimeout(room)),
+        ms,
+      );
     }
     this.broadcast(room, { type: "round_timer", round: game.round, deadline: room.roundDeadline });
   }
@@ -518,6 +556,7 @@ export class RoomManager {
       game: null,
       roundTimer: null,
       roundDeadline: null,
+      lastActivity: this.opts.now(),
     };
     this.rooms.set(code, room);
     return room;
@@ -593,6 +632,32 @@ export class RoomManager {
     }
     this.broadcastRoom(room);
     this.maybeStart(room);
+  }
+
+  /**
+   * Closes rooms nobody is using: no player activity for `idleRoomMs` (lobby or game), or a
+   * finished game with no rematch for `idleFinishedMs`. Also forgets expired join counters.
+   * Runs on a timer; public so tests can call it.
+   */
+  sweep(): void {
+    const now = this.opts.now();
+    for (const room of [...this.rooms.values()]) {
+      const limit = room.phase === "finished" ? this.opts.idleFinishedMs : this.opts.idleRoomMs;
+      if (now - room.lastActivity < limit) continue;
+      for (const seat of room.seats) {
+        if (seat.graceTimer) clearTimeout(seat.graceTimer);
+        this.sessions.delete(seat.token);
+        if (seat.conn) {
+          seat.conn.send({ type: "left", reason: "idle" });
+          seat.conn.seat = null;
+          seat.conn = null;
+        }
+      }
+      this.deleteRoom(room);
+    }
+    for (const [ip, entry] of this.failedJoinsByIp) {
+      if (entry.resetAt <= now) this.failedJoinsByIp.delete(ip);
+    }
   }
 
   // ---------- helpers ----------

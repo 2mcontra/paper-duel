@@ -32,6 +32,7 @@ describe("rules config", () => {
   it("rejects bad or unknown values", () => {
     const bad = [
       { totalPages: 305 },
+      { totalPages: 1_000_000 },
       { lives: 0 },
       { lives: 6 },
       { roundTimerSeconds: 2 },

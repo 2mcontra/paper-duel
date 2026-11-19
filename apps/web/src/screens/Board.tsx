@@ -326,6 +326,17 @@ export function Board() {
       </section>
 
       <EmoteBar />
+      {game.phase === "playing" && !game.players[you]!.out && (
+        <button
+          className="btn btn--quiet btn--small leave-game"
+          onClick={() => {
+            if (confirm("Leave this game? You'll be knocked out.")) s.leave();
+          }}
+          data-testid="leave-game"
+        >
+          Leave game
+        </button>
+      )}
       <EventLog log={display.log} you={you} names={names} />
       <ShotOverlay current={s.current} />
     </main>

@@ -1,9 +1,27 @@
 import { buildApp } from "./app.js";
 
-const port = Number(process.env.PORT ?? 8787);
-const host = process.env.HOST ?? "0.0.0.0";
+const env = process.env;
+const port = Number(env.PORT ?? 8787);
+const host = env.HOST ?? "0.0.0.0";
+const list = (v: string | undefined) =>
+  v
+    ? v
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : null;
 
-const { app } = await buildApp({ logger: { level: process.env.LOG_LEVEL ?? "info" } });
+const { app } = await buildApp({
+  logger: { level: env.LOG_LEVEL ?? "info" },
+  // e.g. ALLOWED_ORIGINS=https://duel.example,https://www.duel.example
+  allowedOrigins: list(env.ALLOWED_ORIGINS),
+  // Set TRUST_PROXY=true behind a reverse proxy so per-IP limits see real client IPs.
+  trustProxy: env.TRUST_PROXY === "true",
+  ...(env.MAX_ROOMS ? { maxRooms: Number(env.MAX_ROOMS) } : {}),
+  ...(env.MAX_CONNECTIONS_PER_IP
+    ? { maxConnectionsPerIp: Number(env.MAX_CONNECTIONS_PER_IP) }
+    : {}),
+});
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {

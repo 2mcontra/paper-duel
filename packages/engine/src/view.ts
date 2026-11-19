@@ -27,7 +27,15 @@ export function redactEvent(e: GameEvent, viewer: PlayerIndex | null): GameEvent
   return e;
 }
 
-export function viewFor(state: GameState, viewer: PlayerIndex | null): GameView {
+/**
+ * @param logTail how many recent events to include (default LOG_TAIL). Pass 0 for updates that
+ *   carry their new events separately, so the log isn't resent every time.
+ */
+export function viewFor(
+  state: GameState,
+  viewer: PlayerIndex | null,
+  logTail = LOG_TAIL,
+): GameView {
   const { history: _history, log, players, pending, ...rest } = state;
   return {
     ...rest,
@@ -39,7 +47,7 @@ export function viewFor(state: GameState, viewer: PlayerIndex | null): GameView 
     pending: pending.map((sub, i) =>
       sub === null ? null : i === viewer ? sub : { hidden: true as const, done: sub.done },
     ),
-    log: log.slice(-LOG_TAIL).map((e) => redactEvent(e, viewer)),
+    log: logTail > 0 ? log.slice(-logTail).map((e) => redactEvent(e, viewer)) : [],
   };
 }
 

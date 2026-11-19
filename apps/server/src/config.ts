@@ -18,6 +18,24 @@ export interface ServerOptions {
   /** Uniform integer in [0, n). Used for coin flips and room codes. */
   randomInt: (n: number) => number;
   now: () => number;
+
+  /** Origins allowed to open a WebSocket (exact match, e.g. "https://duel.example"). null = any. */
+  allowedOrigins: string[] | null;
+  /** Open WebSocket connections allowed per client IP. */
+  maxConnectionsPerIp: number;
+  /** Failed room-code guesses allowed per IP within `joinWindowMs` (on top of the per-connection limit). */
+  maxFailedJoinsPerIp: number;
+  joinWindowMs: number;
+  /** WebSocket ping interval; a connection that misses a pong by the next ping is dropped. */
+  heartbeatMs: number;
+  /** A lobby or game with no player activity for this long is closed. */
+  idleRoomMs: number;
+  /** A finished game nobody rematches is closed after this long. */
+  idleFinishedMs: number;
+  /** How often idle rooms are swept. */
+  sweepMs: number;
+  /** Errors from timers and other places with no caller to report to. */
+  onError: (err: unknown, where: string) => void;
 }
 
 export const DEFAULT_OPTIONS: ServerOptions = {
@@ -31,4 +49,13 @@ export const DEFAULT_OPTIONS: ServerOptions = {
   randomPage: (totalPages) => 1 + randomInt(0, totalPages),
   randomInt: (n) => randomInt(0, n),
   now: () => Date.now(),
+  allowedOrigins: null,
+  maxConnectionsPerIp: 20,
+  maxFailedJoinsPerIp: 30,
+  joinWindowMs: 10 * 60_000,
+  heartbeatMs: 30_000,
+  idleRoomMs: 30 * 60_000,
+  idleFinishedMs: 10 * 60_000,
+  sweepMs: 60_000,
+  onError: (err, where) => console.error(`[paper-duel] error in ${where}:`, err),
 };

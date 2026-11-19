@@ -40,8 +40,13 @@ export function resolveRules(overrides: RulesOverrides = {}): RulesConfig {
     }
   }
   const { totalPages, roundTimerSeconds, lives } = rules;
-  if (!Number.isInteger(totalPages) || totalPages < 10 || totalPages % 10 !== 0) {
-    throw new RulesError(`totalPages must be a positive multiple of 10, got ${totalPages}`);
+  if (
+    !Number.isInteger(totalPages) ||
+    totalPages < 10 ||
+    totalPages > 10_000 ||
+    totalPages % 10 !== 0
+  ) {
+    throw new RulesError(`totalPages must be a multiple of 10 from 10 to 10000, got ${totalPages}`);
   }
   if (!Number.isInteger(lives) || lives < 1 || lives > 5) {
     throw new RulesError(`lives must be 1..5, got ${lives}`);

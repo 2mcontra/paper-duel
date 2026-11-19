@@ -43,6 +43,42 @@ The video leaves these open. Each is a **configurable rule option** (`RulesConfi
 
 ---
 
+### 1.3 Version 2: party rules (2 to 6 players)
+
+Added after M3 because playtesters found 1v1 "just clicking": players made no decisions. Version 2 replaces turns with rounds and adds targets and cards.
+
+**Players and lives**
+- 2 to 6 players. The host sets the room size and starts the game when everyone is ready.
+- Each player has 3 **lives** (`lives`, 1 to 5). Losing that many slots knocks you **out**. The **last player standing** wins. With 2 players this is the same as best of 5.
+
+**Rounds**
+- Every round, all players still in the game act at the same time, within the round timer (default 20 s, `roundTimerSeconds`).
+- On your go: optionally queue one card, then open the book. You see your own page straight away. If it lands on an armed slot and more than one opponent is left, you **pick a target**.
+- Choices stay hidden until everyone is done (or the timer runs out, and the server acts for anyone left). The round then plays out in a fixed order that rotates every round, so nobody always goes first.
+- Things change during a round. If your target was knocked out by someone earlier in the order, your shot misses.
+
+**Shooting**
+- An armed slot `n` fires at the chosen opponent's slot `n`. A gun there (stage 4 or 5) is eliminated, unless it is shielded.
+- R4, R5, R6 and R9 work as before. R3 (choose attack or skip) is replaced by choosing a target. R8 no longer applies.
+
+**Lucky cards** (`luckyCards`, on by default)
+- Lucky pages are 100, 200, 300 and any repeated-digit page (11, 22, ..., 99, 111, 222), about 1 in 21 pages. A lucky page also gives you a random card, on top of its normal effect.
+- You hold at most 3 cards, and other players only see how many you hold. You play at most one card per round, before opening the book. It takes effect at your place in the round order.
+
+| Card | Effect |
+|------|--------|
+| 🛡️ Shield | Put a shield on one of your slots. It blocks the next shot at that slot |
+| 💥 Double shot | If you fire this round, hit two different players' slots `n`. If you don't fire, you keep the card |
+| 🧽 Eraser | Rub out the top part of one opponent figure (an armed figure loses its bullets) |
+| 🔄 Swap | Swap two of your living figures (and their shields) |
+| 🫳 Steal | Take the bullets from an opponent's armed slot `n`; your slot `n` loads if it has a gun |
+
+A card that no longer makes sense when it resolves (its target is gone) **fizzles** and goes back to your hand.
+
+**Emotes:** quick reactions (😂 🔥 😤 🍀 🤝 😱) shown to the room, limited to one every 1.5 s.
+
+**Stalemate (R11):** if no slot number is alive for two players still in, the player with the most living slots wins, and a tie is a draw.
+
 ## 2. Virtual Book Design
 
 ### 2.1 Concept

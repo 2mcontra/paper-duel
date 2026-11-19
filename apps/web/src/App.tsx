@@ -2,13 +2,16 @@ import { useEffect } from "react";
 import { Board } from "./screens/Board.js";
 import { Landing } from "./screens/Landing.js";
 import { Lobby } from "./screens/Lobby.js";
+import { SketchFilter } from "./components/StickFigure.js";
 import { connectGame, useGame } from "./store/game.js";
 
 export function App() {
   useEffect(() => connectGame(), []);
   return (
     <>
+      <SketchFilter />
       <ConnectionBanner />
+      <MuteButton />
       <Screen />
       <Toasts />
     </>
@@ -21,6 +24,22 @@ function Screen() {
   if (!room) return <Landing />;
   if (room.phase === "lobby" || !game) return <Lobby />;
   return <Board />;
+}
+
+function MuteButton() {
+  const muted = useGame((s) => s.muted);
+  const toggle = useGame((s) => s.toggleMute);
+  return (
+    <button
+      className="mute"
+      onClick={toggle}
+      aria-pressed={muted}
+      aria-label={muted ? "Sound off" : "Sound on"}
+      title={muted ? "Sound off" : "Sound on"}
+    >
+      {muted ? "🔇" : "🔊"}
+    </button>
+  );
 }
 
 function ConnectionBanner() {

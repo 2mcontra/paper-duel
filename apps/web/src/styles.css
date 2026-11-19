@@ -737,7 +737,9 @@ select {
 
 .book__page mark {
   background: none;
-  border-bottom: 4px solid currentColor;
+  text-decoration: underline;
+  text-decoration-thickness: 4px;
+  text-underline-offset: 3px;
 }
 
 .digit--odd {
@@ -902,5 +904,246 @@ select {
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;
+  }
+}
+
+/* ---------- M4: animation ---------- */
+
+.mute {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 15;
+  width: 40px;
+  height: 40px;
+  font-size: 20px;
+  background: var(--paper);
+  border: 2px solid var(--ink-soft);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* Pencil: new strokes draw themselves in (paths use pathLength="1"). */
+.ink {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: ink 420ms ease-out forwards;
+}
+
+.ink--x {
+  animation-duration: 380ms;
+  animation-delay: 80ms;
+}
+
+.ink-fill {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ink-fill 320ms ease-out both;
+}
+
+@keyframes ink {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ink-fill {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.figure--hit {
+  animation: shake 420ms ease;
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: none;
+  }
+  20% {
+    transform: translateX(-4px) rotate(-3deg);
+  }
+  40% {
+    transform: translateX(4px) rotate(3deg);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+}
+
+/* The book: leaves flip past, slowing down, then the page lands. */
+.book {
+  position: relative;
+  perspective: 900px;
+  overflow: hidden;
+}
+
+.book__content {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+
+.book--flipping .book__content {
+  animation: land 260ms ease-out both;
+  animation-delay: var(--land-ms, 800ms);
+}
+
+.book__leaves {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.leaf {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 50%;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+  color: var(--ink-soft);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 0 8px 8px 0;
+  transform-origin: left center;
+  backface-visibility: hidden;
+  opacity: 0;
+  animation: leaf var(--leaf-ms, 280ms) ease-in both;
+}
+
+@keyframes leaf {
+  0% {
+    opacity: 1;
+    transform: rotateY(0deg);
+  }
+  99% {
+    opacity: 1;
+    transform: rotateY(-178deg);
+  }
+  100% {
+    opacity: 0;
+    transform: rotateY(-180deg);
+  }
+}
+
+@keyframes land {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Reveal: whose go is being shown. */
+.opp--active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.mini--rolled {
+  background: color-mix(in srgb, var(--highlight) 80%, transparent);
+}
+
+.revealing {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Shots are drawn over the whole page. */
+.shot-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 12;
+  overflow: visible;
+}
+
+.shot-line {
+  fill: none;
+  stroke: var(--hit);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  filter: url(#sketch);
+  animation: ink 380ms ease-in forwards;
+}
+
+.shot-mark {
+  font-family: var(--font);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  paint-order: stroke;
+  stroke: var(--paper);
+  stroke-width: 5px;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mark 700ms ease-out both;
+}
+
+.shot-mark--bang {
+  font-size: 30px;
+  fill: var(--hit);
+}
+
+.shot-mark--block {
+  font-size: 30px;
+}
+
+.shot-mark--miss {
+  font-size: 22px;
+  fill: var(--ink-soft);
+}
+
+@keyframes mark {
+  0% {
+    opacity: 0;
+    transform: scale(0.3) rotate(-12deg);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.2) rotate(4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Reduced motion: no flips, draws or shakes; the reveal is instant (see playback). */
+@media (prefers-reduced-motion: reduce) {
+  .ink,
+  .ink-fill,
+  .figure--hit,
+  .book--flipping .book__content,
+  .shot-line,
+  .shot-mark,
+  .bubble {
+    animation: none !important;
+    stroke-dashoffset: 0 !important;
+  }
+
+  .book__leaves {
+    display: none;
   }
 }

@@ -6,6 +6,7 @@ import {
   lostCount,
   type Card,
   type CardPlay,
+  type GameEvent,
   type GameView,
   type PlayerIndex,
   type PlayerView,
@@ -16,6 +17,7 @@ import { EMOTES } from "@paper-duel/protocol";
 import { BookPage } from "../components/Book.js";
 import { Countdown } from "../components/Countdown.js";
 import { EventLog } from "../components/EventLog.js";
+import { ShotOverlay } from "../components/ShotOverlay.js";
 import { StickFigure } from "../components/StickFigure.js";
 import { useGame, type EmoteBubble } from "../store/game.js";
 import { CARD_INFO, EMOTE_ICONS, STAGE_NAMES, describeEvent, describePlay } from "../text.js";
@@ -35,7 +37,9 @@ export function Board() {
 
   const mine = game && you !== null ? game.pending[you] : null;
   const myGo: Submission | null = mine && !isHidden(mine) ? mine : null;
-  const canOpen = game?.phase === "playing" && !!myGo && !myGo.done && !myGo.needsTarget && !s.busy;
+  const revealing = !!s.reveal;
+  const canOpen =
+    game?.phase === "playing" && !!myGo && !myGo.done && !myGo.needsTarget && !s.busy && !revealing;
 
   // Space opens the book (plan 6.4), unless you're typing or on a button.
   useEffect(() => {
@@ -60,21 +64,48 @@ export function Board() {
   }
 
   if (!game || you === null || !room) return null;
-  const me = game.players[you]!;
+  // Boards show the round as it is being revealed; controls follow the server's state.
+  const display = s.shown ?? game;
+  const me = display.players[you]!;
+  const myHand = game.players[you]!.hand ?? [];
   const names = game.players.map((p) => p.name);
   const lives = game.rules.lives;
   const opponents = game.players.flatMap((p, i) => (i === you ? [] : [i]));
   const activeOpps = opponents.filter((i) => !game.players[i]!.out);
+  const opened = revealing ? lastOpened(display) : null;
   const waitingFor = game.pending.flatMap((sub, i) =>
     sub && !sub.done && i !== you ? [names[i]!] : [],
   );
   const bubbles = new Map(s.emotes.map((e) => [e.from, e]));
-  const hits = new Set(
-    s.lastEvents.flatMap((e) => (e.type === "SlotEliminated" ? [`${e.target}:${e.slot}`] : [])),
-  );
+  const cur = s.current?.event;
+  const hits = new Set(cur?.type === "SlotEliminated" ? [`${cur.target}:${cur.slot}`] : []);
   const armedSlot = myGo?.needsTarget ? ((myGo.pages.at(-1)! % 10) as SlotNumber) : null;
   const wantTargets = myGo?.card?.card === "double_shot" ? Math.min(2, activeOpps.length) : 1;
-  const lastPage = myGo?.pages.at(-1) ?? lastPageOf(game, you);
+  const lastPage = myGo?.pages.at(-1) ?? lastPageOf(display, you);
+  // While revealing, the book follows each player's page; otherwise it shows yours.
+  const book = opened
+    ? {
+        page: opened.event.page,
+        caption: opened.event.player === you ? "Your page" : `${names[opened.event.player]}'s page`,
+        flipKey: `r${opened.index}`,
+        flipMs: 420,
+      }
+    : myGo?.pages.length
+      ? {
+          page: lastPage,
+          caption: "Your page this round",
+          flipKey: `${game.round}-${myGo.pages.length}`,
+          flipMs: 800,
+        }
+      : { page: lastPage, caption: "Your last page", flipKey: undefined, flipMs: 0 };
+  const rolledSlot = (p: PlayerIndex): number | null =>
+    opened
+      ? opened.event.player === p
+        ? opened.event.digit
+        : null
+      : p === you && lastPage !== null
+        ? lastPage % 10
+        : null;
 
   // ----- picking handlers -----
   const startCard = (card: Card) => {
@@ -118,7 +149,7 @@ export function Board() {
   return (
     <main className="page board-page">
       <header className="roundbar">
-        <span className="roundbar__round">Round {game.round}</span>
+        <span className="roundbar__round">Round {display.round}</span>
         {game.phase === "playing" && s.timer?.round === game.round && (
           <Countdown
             key={s.timer.deadline ?? "none"}
@@ -127,7 +158,7 @@ export function Board() {
           />
         )}
         <span className="roundbar__wait" data-testid="waiting">
-          {game.phase !== "playing"
+          {game.phase !== "playing" || revealing
             ? ""
             : waitingFor.length
               ? `Waiting for ${waitingFor.join(", ")}`
@@ -141,18 +172,24 @@ export function Board() {
         {opponents.map((i) => (
           <OpponentCard
             key={i}
-            player={game.players[i]!}
+            player={display.players[i]!}
             index={i}
-            lives={livesLeft(game.players[i]!, lives)}
+            lives={livesLeft(display.players[i]!, lives)}
+            active={opened?.event.player === i}
+            rolled={rolledSlot(i)}
             done={!!game.pending[i]?.done}
             left={!!room.seats[i]?.left}
             connected={room.seats[i]?.connected ?? true}
             bubble={bubbles.get(i)}
             aimSlot={armedSlot}
             aimed={aimed.includes(i)}
-            onAim={armedSlot !== null && !game.players[i]!.out ? () => toggleAim(i) : undefined}
+            onAim={
+              armedSlot !== null && !revealing && !game.players[i]!.out
+                ? () => toggleAim(i)
+                : undefined
+            }
             hits={hits}
-            slotPickable={(n) => theirSlotPickable(game.players[i]!, n)}
+            slotPickable={(n) => theirSlotPickable(display.players[i]!, n)}
             onPickSlot={(n) => pickTheirSlot(i, n)}
           />
         ))}
@@ -169,7 +206,7 @@ export function Board() {
         {SLOT_NUMBERS.map((n) => {
           const sl = slotOf(me, n);
           const pickable = mySlotPickable(n);
-          const rolled = lastPage !== null && lastPage % 10 === n;
+          const rolled = rolledSlot(you) === n;
           const label = `Your slot ${n}: ${sl.status === "eliminated" ? "eliminated" : STAGE_NAMES[sl.stage]}${sl.shielded ? ", shielded" : ""}`;
           return (
             <div
@@ -183,12 +220,13 @@ export function Board() {
                   className="cell cell--pick"
                   onClick={() => pickMySlot(n)}
                   aria-label={`Pick ${label}`}
+                  data-slot={`${you}-${n}`}
                 >
                   <StickFigure stage={sl.stage} eliminated={false} label={label} />
                   {sl.shielded && <span className="shield-badge">🛡️</span>}
                 </button>
               ) : (
-                <div className="cell">
+                <div className="cell" data-slot={`${you}-${n}`}>
                   <StickFigure
                     stage={sl.stage}
                     eliminated={sl.status === "eliminated"}
@@ -204,13 +242,24 @@ export function Board() {
 
       <section className="controls">
         <BookPage
-          page={lastPage}
-          caption={myGo?.pages.length ? "Your page this round" : "Your last page"}
+          page={book.page}
+          caption={book.caption}
+          flipKey={book.flipKey}
+          flipMs={book.flipMs}
         />
         <div className="turn">
-          {game.phase !== "playing" ? (
+          {revealing ? (
+            <div className="revealing">
+              <p className="turn__label" data-testid="revealing">
+                Round {display.round} reveal...
+              </p>
+              <button className="btn btn--small" onClick={s.skipReveal} data-testid="skip">
+                Skip
+              </button>
+            </div>
+          ) : game.phase !== "playing" ? (
             <GameOver />
-          ) : me.out ? (
+          ) : game.players[you]!.out ? (
             <p className="turn__label">You're out. Watch the rest play it out!</p>
           ) : armedSlot !== null ? (
             <div className="aim" data-testid="aim">
@@ -261,9 +310,9 @@ export function Board() {
             <p className="hint">Time ran out, so your go was played for you.</p>
           )}
 
-          {game.phase === "playing" && !me.out && (
+          {game.phase === "playing" && !game.players[you]!.out && !revealing && (
             <Hand
-              hand={me.hand ?? []}
+              hand={myHand}
               queued={myGo?.card ?? null}
               canPlay={!!myGo && myGo.pages.length === 0 && !myGo.done}
               doubleOk={activeOpps.length >= 2}
@@ -277,9 +326,22 @@ export function Board() {
       </section>
 
       <EmoteBar />
-      <EventLog log={game.log} you={you} names={names} />
+      <EventLog log={display.log} you={you} names={names} />
+      <ShotOverlay current={s.current} />
     </main>
   );
+}
+
+/** The latest BookOpened in the displayed log, with its position (for replaying the flip). */
+function lastOpened(
+  view: GameView,
+): { event: Extract<GameEvent, { type: "BookOpened" }>; index: number } | null {
+  for (let i = view.log.length - 1; i >= 0; i--) {
+    const e = view.log[i]!;
+    if (e.type === "RoundStarted") return null;
+    if (e.type === "BookOpened") return { event: e, index: i };
+  }
+  return null;
 }
 
 /** Your page in the most recent resolved round (shown until you open the book again). */
@@ -312,6 +374,9 @@ function Bubble({ bubble }: { bubble: EmoteBubble }) {
 interface OpponentProps {
   player: PlayerView;
   index: PlayerIndex;
+  /** Their go is being revealed right now. */
+  active: boolean;
+  rolled: number | null;
   lives: number;
   done: boolean;
   left: boolean;
@@ -371,18 +436,19 @@ function OpponentCard(p: OpponentProps) {
               {sl.shielded && <span className="shield-badge shield-badge--mini">🛡️</span>}
             </>
           );
-          const cls = `mini${p.aimSlot === n ? " mini--aim" : ""}${p.hits.has(`${p.index}:${n}`) ? " mini--hit" : ""}`;
+          const cls = `mini${p.aimSlot === n ? " mini--aim" : ""}${p.rolled === n ? " mini--rolled" : ""}${p.hits.has(`${p.index}:${n}`) ? " mini--hit" : ""}`;
           return pickable ? (
             <button
               key={n}
               className={`${cls} mini--pick`}
               onClick={() => p.onPickSlot(n)}
               aria-label={`Pick ${label}`}
+              data-slot={`${p.index}-${n}`}
             >
               {figure}
             </button>
           ) : (
-            <div key={n} className={cls}>
+            <div key={n} className={cls} data-slot={`${p.index}-${n}`}>
               {figure}
             </div>
           );
@@ -400,7 +466,7 @@ function OpponentCard(p: OpponentProps) {
       )}
     </>
   );
-  const cls = `opp${player.out ? " opp--out" : ""}${p.onAim ? " opp--aimable" : ""}${p.aimed ? " opp--aimed" : ""}`;
+  const cls = `opp${player.out ? " opp--out" : ""}${p.active ? " opp--active" : ""}${p.onAim ? " opp--aimable" : ""}${p.aimed ? " opp--aimed" : ""}`;
   return p.onAim ? (
     <button
       className={cls}

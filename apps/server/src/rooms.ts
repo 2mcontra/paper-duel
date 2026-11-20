@@ -91,6 +91,16 @@ export class RoomManager {
   /** Failed join attempts per IP in the current window. */
   private readonly failedJoinsByIp = new Map<string, { count: number; resetAt: number }>();
   private connectionCount = 0;
+  /** Totals since the server started, for /metrics. */
+  readonly counters = {
+    roomsCreated: 0,
+    gamesStarted: 0,
+    gamesFinished: 0,
+    playersInGames: 0,
+    roomsClosedIdle: 0,
+    messages: 0,
+    rateLimited: 0,
+  };
   private readonly sweeper: ReturnType<typeof setInterval>;
 
   constructor(private readonly opts: ServerOptions) {
@@ -144,7 +154,9 @@ export class RoomManager {
   }
 
   handle(conn: Connection, raw: string): void {
+    this.counters.messages++;
     if (!conn.limiter.take()) {
+      this.counters.rateLimited++;
       if (!conn.limitedNotified) {
         conn.limitedNotified = true;
         this.sendError(conn, "rate_limited", "Too many messages; slow down");
@@ -414,6 +426,13 @@ export class RoomManager {
       rules: room.rules,
     });
     room.phase = "playing";
+    this.counters.gamesStarted++;
+    this.counters.playersInGames += seats.length;
+    this.opts.onLog("game started", {
+      room: room.code,
+      players: seats.length,
+      lives: room.rules.lives,
+    });
     for (const s of seats) {
       s.ready = false;
       s.wantsRematch = false;
@@ -456,6 +475,13 @@ export class RoomManager {
     this.clearRoundTimer(room);
     const game = room.game!;
     room.phase = "finished";
+    this.counters.gamesFinished++;
+    this.opts.onLog("game finished", {
+      room: room.code,
+      players: game.players.length,
+      rounds: game.round,
+      reason: game.endReason,
+    });
     room.seats.forEach((s, i) => {
       s.conn?.send({
         type: "game_over",
@@ -559,6 +585,7 @@ export class RoomManager {
       lastActivity: this.opts.now(),
     };
     this.rooms.set(code, room);
+    this.counters.roomsCreated++;
     return room;
   }
 
@@ -654,6 +681,8 @@ export class RoomManager {
         }
       }
       this.deleteRoom(room);
+      this.counters.roomsClosedIdle++;
+      this.opts.onLog("idle room closed", { room: room.code, phase: room.phase });
     }
     for (const [ip, entry] of this.failedJoinsByIp) {
       if (entry.resetAt <= now) this.failedJoinsByIp.delete(ip);

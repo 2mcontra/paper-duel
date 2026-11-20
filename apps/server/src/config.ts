@@ -36,6 +36,8 @@ export interface ServerOptions {
   sweepMs: number;
   /** Errors from timers and other places with no caller to report to. */
   onError: (err: unknown, where: string) => void;
+  /** Notable game events for the server log (room codes and counts only, never names). */
+  onLog: (msg: string, fields: Record<string, unknown>) => void;
 }
 
 export const DEFAULT_OPTIONS: ServerOptions = {
@@ -58,4 +60,5 @@ export const DEFAULT_OPTIONS: ServerOptions = {
   idleFinishedMs: 10 * 60_000,
   sweepMs: 60_000,
   onError: (err, where) => console.error(`[paper-duel] error in ${where}:`, err),
+  onLog: () => {},
 };

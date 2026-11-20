@@ -1,0 +1,19 @@
+# Caddy obtains and renews the TLS certificate for {$DOMAIN} automatically,
+# redirects HTTP to HTTPS, and passes WebSocket upgrades through without extra config.
+{$DOMAIN} {
+	encode zstd gzip
+
+	# Metrics are for you, not the internet. Scrape them from the Docker network
+	# (http://app:8787/metrics) or open them with an SSH tunnel.
+	@internal path /metrics
+	respond @internal 404
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		X-Frame-Options DENY
+	}
+
+	reverse_proxy app:8787
+}

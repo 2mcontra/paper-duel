@@ -35,3 +35,18 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm e2e
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: docker build -t paper-duel:ci .
+      - name: Smoke test the image
+        run: |
+          docker run -d --name pd -p 8787:8787 paper-duel:ci
+          for i in $(seq 1 30); do curl -sf localhost:8787/health && break; sleep 1; done
+          curl -sf localhost:8787/ | grep -q "<title>Paper Duel</title>"
+          curl -sf localhost:8787/metrics | grep -q "^paper_duel_rooms 0"
+          test "$(docker inspect -f '{{.Config.User}}' pd)" = node
+          docker logs pd
+          docker rm -f pd

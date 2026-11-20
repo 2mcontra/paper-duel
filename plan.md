@@ -329,6 +329,8 @@ Updates used to resend the last 200 log events every time (6.9 KB a message). Th
 - Reverse proxy config with TLS and WebSocket upgrade headers.
 - Health endpoint, structured logging, and basic metrics (active rooms, games per hour).
 
+**M6 status:** done. See `DEPLOY.md`. The image is about 330 MB (Node slim base plus one bundled server file and the built client), runs as a non-root user, and has a health check. Verified locally with `docker compose` behind Caddy over HTTPS: the full browser test suite passes against it, HTTP redirects to HTTPS, `/metrics` is blocked from outside, and WebSocket connections from other origins get 403. CI builds and smoke-tests the image on every push.
+
 ### M7: Extras (as time allows)
 - Provably fair mode (commit-reveal, section 2.2).
 - Bot opponent for solo play.

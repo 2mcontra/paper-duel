@@ -7,9 +7,12 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "loadtest": "tsx scripts/loadtest.ts"
+    "loadtest": "tsx scripts/loadtest.ts",
+    "build": "node scripts/build.mjs",
+    "start:prod": "node dist/server.mjs"
   },
   "dependencies": {
+    "@fastify/static": "^10.1.12",
     "@fastify/websocket": "^11.3.7",
     "@paper-duel/engine": "workspace:*",
     "@paper-duel/protocol": "workspace:*",
@@ -17,6 +20,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.18.2",
+    "esbuild": "^0.28.2",
     "tsx": "^4.23.15",
     "ws": "^8.23.0"
   }

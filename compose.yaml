@@ -1,0 +1,44 @@
+# Production: the game behind Caddy, which gets and renews an HTTPS certificate on its own.
+#
+#   DOMAIN=duel.example.com docker compose up -d --build
+#
+# DOMAIN must point at this machine (DNS A/AAAA record) with ports 80 and 443 open.
+# For a local try-out use DOMAIN=localhost (Caddy then uses its own local certificate).
+services:
+  app:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:22-bookworm-slim}
+    image: paper-duel:latest
+    restart: unless-stopped
+    environment:
+      # Only pages from your domain may open game connections.
+      ALLOWED_ORIGINS: https://${DOMAIN:?set DOMAIN, e.g. duel.example.com}
+      # Caddy is the only way in, so its X-Forwarded-For can be trusted (per-IP limits).
+      TRUST_PROXY: "true"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Not published: only Caddy can reach it.
+    expose:
+      - "8787"
+
+  caddy:
+    image: ${CADDY_IMAGE:-caddy:2}
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

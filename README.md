@@ -24,3 +24,7 @@ pnpm sim           # bot games for 2-6 players with balance stats
 pnpm dev           # server on :8787 and client on :5173 (open 2+ tabs to play yourself)
 pnpm e2e           # browser end-to-end tests (starts its own server and client)
 ```
+
+## Deploying
+
+See [DEPLOY.md](DEPLOY.md): one Docker image behind Caddy for automatic HTTPS.

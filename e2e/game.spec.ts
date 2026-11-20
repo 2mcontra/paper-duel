@@ -53,13 +53,19 @@ async function step(pages: Page[]): Promise<void> {
   await Promise.all(
     pages.map(async (p) => {
       const aim = p.locator(".opp--aimable");
-      if (await aim.count())
-        return aim
+      if (await aim.count()) {
+        await aim
           .first()
-          .click()
+          .click({ timeout: 2000 })
           .catch(() => {});
+        return;
+      }
+      // The button can vanish between these calls (the go ends, a reveal starts), so never
+      // let isEnabled() wait for it to come back.
       const open = p.getByTestId("open-book");
-      if ((await open.count()) && (await open.isEnabled())) await open.click().catch(() => {});
+      const ready =
+        (await open.count()) > 0 && (await open.isEnabled({ timeout: 200 }).catch(() => false));
+      if (ready) await open.click({ timeout: 2000 }).catch(() => {});
     }),
   );
 }

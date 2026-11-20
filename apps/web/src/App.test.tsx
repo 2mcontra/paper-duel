@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { renderToString } from "react-dom/server";
+import { createGame, viewFor } from "@paper-duel/engine";
 import { BookPage } from "./components/Book.js";
 import { EventLog } from "./components/EventLog.js";
-import { StickFigure } from "./components/StickFigure.js";
+import { MiniFigure, Track } from "./components/Track.js";
 import { describeEvent } from "./text.js";
 
 const ctx = { you: 0, names: ["Ann", "Ben", "Cat"] };
@@ -10,27 +11,47 @@ const ctx = { you: 0, names: ["Ann", "Ben", "Cat"] };
 describe("describeEvent", () => {
   it("speaks to you and names the others", () => {
     expect(
-      describeEvent({ type: "PartDrawn", player: 0, slot: 5, part: "gun", stage: 4 }, ctx),
-    ).toBe("You draw a gun on slot 5.");
+      describeEvent({ type: "PartDrawn", player: 0, figure: 1, part: "gun", stage: 4 }, ctx),
+    ).toBe("You draw a gun on B.");
     expect(
-      describeEvent({ type: "PartDrawn", player: 2, slot: 5, part: "bullets", stage: 5 }, ctx),
-    ).toBe("Cat draws 3 bullets on slot 5.");
-    expect(describeEvent({ type: "ShotFired", attacker: 1, targets: [0, 2], slot: 3 }, ctx)).toBe(
-      "Ben fires slot 3 at you and Cat!",
-    );
-    expect(describeEvent({ type: "SlotEliminated", attacker: 1, target: 0, slot: 3 }, ctx)).toBe(
-      "BANG! Your slot 3 is gone.",
-    );
-    expect(describeEvent({ type: "ShotBlocked", attacker: 0, target: 2, slot: 3 }, ctx)).toBe(
-      "🛡️ Cat's shield blocked it.",
-    );
-    expect(describeEvent({ type: "PlayerOut", player: 1, reason: "shot", by: 0 }, ctx)).toBe(
-      "💀 Ben is out!",
-    );
-    expect(describeEvent({ type: "GameOver", winner: 0, reason: "last_standing" }, ctx)).toBe(
-      "🏆 You win!",
-    );
-    expect(describeEvent({ type: "PlayerReady", player: 1 }, ctx)).toBeNull();
+      describeEvent({ type: "PartDrawn", player: 2, figure: 0, part: "bullets", stage: 5 }, ctx),
+    ).toBe("Cat draws bullets on A.");
+    expect(
+      describeEvent(
+        {
+          type: "ShotFired",
+          player: 1,
+          figure: 2,
+          targets: [
+            { player: 0, figure: 0 },
+            { player: 2, figure: 1 },
+          ],
+        },
+        ctx,
+      ),
+    ).toBe("🔫 Ben's C fires at your A and Cat's B!");
+    expect(
+      describeEvent(
+        { type: "FigureKilled", player: 1, figure: 0, target: 0, targetFigure: 2 },
+        ctx,
+      ),
+    ).toBe("BANG! Your C is gone.");
+    expect(
+      describeEvent(
+        { type: "Stomped", player: 0, figure: 0, target: 2, targetFigure: 0, stage: 3 },
+        ctx,
+      ),
+    ).toBe("🦶 STOMP! Cat's A is sent home.");
+    expect(
+      describeEvent({ type: "FigureMoved", player: 1, figure: 0, from: null, to: 13 }, ctx),
+    ).toBe("Ben walks A out of home to square 14.");
+    expect(
+      describeEvent({ type: "PlayerOut", player: 1, reason: "shot", by: 0, place: 3 }, ctx),
+    ).toBe("💀 Ben is out (3rd)!");
+    expect(
+      describeEvent({ type: "GameOver", winner: 0, reason: "last_standing", places: [1, 2] }, ctx),
+    ).toBe("🏆 You win!");
+    expect(describeEvent({ type: "TurnStarted", player: 1, round: 1, turn: 2 }, ctx)).toBeNull();
   });
 
   it("only names the card when it is yours", () => {
@@ -43,55 +64,74 @@ describe("describeEvent", () => {
   });
 });
 
-describe("StickFigure", () => {
-  it("adds parts by stage", () => {
-    const count = (stage: 0 | 1 | 2 | 3 | 4 | 5) =>
+describe("MiniFigure", () => {
+  it("adds parts by stage, and marks the dead with an X", () => {
+    const count = (stage: number) =>
       (
-        renderToString(<StickFigure stage={stage} eliminated={false} label="x" />).match(
-          /<(circle|path)/g,
-        ) ?? []
+        renderToString(
+          <svg>
+            <MiniFigure stage={stage} dead={false} color="red" shielded={false} />
+          </svg>,
+        ).match(/<(circle|path)/g) ?? []
       ).length;
-    const counts = ([1, 2, 3, 4, 5] as const).map(count);
+    const counts = [1, 2, 3, 4, 5].map(count);
     expect(counts).toEqual([...counts].sort((a, b) => a - b));
-    expect(new Set(counts).size).toBe(5);
+    expect(
+      renderToString(
+        <svg>
+          <MiniFigure stage={4} dead color="red" shielded={false} />
+        </svg>,
+      ),
+    ).toContain("mfig__x");
   });
+});
 
-  it("marks eliminated figures with an X", () => {
-    expect(renderToString(<StickFigure stage={4} eliminated label="x" />)).toContain("figure__x");
+describe("Track", () => {
+  it("draws every square and every figure", () => {
+    const game = viewFor(
+      createGame({
+        id: "g",
+        players: ctx.names.map((name, i) => ({ id: `${i}`, name })),
+        firstSeat: 0,
+      }),
+      0,
+    );
+    const html = renderToString(<Track game={game} you={0} />).replace(/<!-- -->/g, "");
+    expect(html.match(/class="sq[ "]/g)).toHaveLength(30);
+    expect(html.match(/data-fig=/g)).toHaveLength(9);
+    expect(html).toContain("Ann (you)");
   });
 });
 
 describe("BookPage", () => {
-  it("highlights the last digit and explains it", () => {
+  it("highlights the last digit and gives the roll", () => {
     const html = renderToString(<BookPage page={137} caption="Your page" />);
     expect(html).toContain("13<mark");
-    expect(html).toContain("slot 7");
-    expect(renderToString(<BookPage page={42} caption="x" />)).toContain("even, no game");
-    expect(renderToString(<BookPage page={null} caption="x" />)).toContain("closed");
+    expect(html).toContain("roll 7");
+    expect(renderToString(<BookPage page={40} caption="x" />)).toContain("roll 10");
+    expect(renderToString(<BookPage page={null} caption="Closed book" />)).toContain("Closed book");
   });
 });
 
 describe("EventLog", () => {
-  it("groups by round, newest first", () => {
+  it("one line per turn, newest first", () => {
     const raw = renderToString(
       <EventLog
         you={0}
         names={ctx.names}
         log={[
-          { type: "RoundStarted", round: 1, order: [0, 1] },
-          { type: "BookOpened", player: 0, page: 13, digit: 3 },
-          { type: "PartDrawn", player: 0, slot: 3, part: "head", stage: 1 },
-          { type: "BookOpened", player: 1, page: 42, digit: 2 },
-          { type: "TurnWasted", player: 1, reason: "even_digit" },
-          { type: "RoundStarted", round: 2, order: [1, 0] },
-          { type: "BookOpened", player: 1, page: 17, digit: 7 },
-          { type: "PartDrawn", player: 1, slot: 7, part: "head", stage: 1 },
+          { type: "TurnStarted", player: 0, round: 1, turn: 1 },
+          { type: "BookOpened", player: 0, page: 13, roll: 3 },
+          { type: "PartDrawn", player: 0, figure: 0, part: "face", stage: 3 },
+          { type: "TurnStarted", player: 1, round: 1, turn: 2 },
+          { type: "BookOpened", player: 1, page: 42, roll: 2 },
+          { type: "Passed", player: 1 },
         ]}
       />,
     );
     const html = raw.replace(/<!-- -->/g, "");
-    expect(html.indexOf("Round 2")).toBeLessThan(html.indexOf("Round 1"));
-    expect(html).toContain("You open page 13. You draw a head on slot 3.");
-    expect(html).toContain("Ben opens page 42. Even digit: no game.");
+    expect(html.indexOf("Ben opens")).toBeLessThan(html.indexOf("You open"));
+    expect(html).toContain("You open page 13: roll 3. You draw a face on A.");
+    expect(html).toContain("Ben opens page 42: roll 2. Ben passes.");
   });
 });

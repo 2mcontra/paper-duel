@@ -4,12 +4,13 @@ const NAMES = ["Asha", "Bala", "Chitra", "Dev", "Esha", "Farid"];
 
 /**
  * Opens `count` players in separate browser contexts (separate sessions), creates a room,
- * sets the rules, readies everyone and starts the game. Returns pages in seat order.
+ * sets the rules, readies everyone and starts the game. The host always goes first and there
+ * is no turn timer. Returns pages in seat order.
  */
 async function startParty(
   browser: Browser,
   count: number,
-  setup: { lives?: string; reducedMotion?: boolean } = {},
+  setup: { figures?: string; rounds?: string; reducedMotion?: boolean } = {},
 ): Promise<Page[]> {
   const pages: Page[] = [];
   for (let i = 0; i < count; i++) {
@@ -33,44 +34,53 @@ async function startParty(
     await g.getByRole("button", { name: "Join" }).click();
     await expect(g.getByTestId("room-code")).toHaveText(code);
   }
-  if (setup.lives) {
-    await host.locator(".rule", { hasText: "Lives" }).locator("select").selectOption(setup.lives);
-    for (const g of guests) {
-      await expect(g.locator(".rule", { hasText: "Lives" }).locator("dd")).toHaveText(
-        new RegExp(`^${setup.lives}`),
-      );
-    }
-  }
+  const rule = (label: string) => host.locator(".rule", { hasText: label }).locator("select");
+  await rule("Who goes first").selectOption("host");
+  await rule("Turn timer").selectOption("null");
+  if (setup.figures) await rule("Figures each").selectOption(setup.figures);
+  if (setup.rounds) await rule("Round limit").selectOption(setup.rounds);
+  const last = guests.at(-1)!;
+  await expect(last.locator(".rule", { hasText: "Turn timer" }).locator("dd")).toHaveText("Off");
   for (const p of pages) await p.getByTestId("ready").click();
   await expect(host.getByTestId("start")).toBeEnabled();
   await host.getByTestId("start").click();
-  for (const p of pages) await expect(p.getByTestId("open-book")).toBeVisible();
+  for (const p of pages) await expect(p.getByTestId("track")).toBeVisible();
+  await expect(host.getByTestId("open-book")).toBeVisible();
   return pages;
 }
 
-/** One pass over every player: aim if asked, otherwise open the book if it's their go. */
+/**
+ * One pass over every player: open the book if it's their turn, or pick a move (shoot if
+ * possible, else draw, else walk, else pass).
+ */
 async function step(pages: Page[]): Promise<void> {
-  await Promise.all(
-    pages.map(async (p) => {
-      const aim = p.locator(".opp--aimable");
-      if (await aim.count()) {
-        await aim
-          .first()
-          .click({ timeout: 2000 })
-          .catch(() => {});
-        return;
+  for (const p of pages) {
+    // Buttons can vanish between these calls (the turn ends, playback starts), so never let
+    // a check wait for one to come back.
+    const open = p.getByTestId("open-book");
+    if ((await open.count()) && (await open.isEnabled({ timeout: 200 }).catch(() => false))) {
+      await open.click({ timeout: 2000 }).catch(() => {});
+      return;
+    }
+    const choices = p.getByTestId("choices");
+    if (await choices.count()) {
+      for (const sel of [
+        "[data-testid^=shoot-]",
+        "[data-testid^=draw-]",
+        "[data-testid^=move-]",
+        "[data-testid=pass]",
+      ]) {
+        const btn = choices.locator(sel).first();
+        if (await btn.count()) {
+          await btn.click({ timeout: 2000 }).catch(() => {});
+          return;
+        }
       }
-      // The button can vanish between these calls (the go ends, a reveal starts), so never
-      // let isEnabled() wait for it to come back.
-      const open = p.getByTestId("open-book");
-      const ready =
-        (await open.count()) > 0 && (await open.isEnabled({ timeout: 200 }).catch(() => false));
-      if (ready) await open.click({ timeout: 2000 }).catch(() => {});
-    }),
-  );
+    }
+  }
 }
 
-async function playUntilOver(pages: Page[], timeoutMs = 60_000): Promise<string[]> {
+async function playUntilOver(pages: Page[], timeoutMs = 75_000): Promise<string[]> {
   const deadline = Date.now() + timeoutMs;
   while (!(await pages[0]!.getByTestId("game-over").isVisible())) {
     if (Date.now() > deadline) throw new Error("game did not finish in time");
@@ -80,37 +90,38 @@ async function playUntilOver(pages: Page[], timeoutMs = 60_000): Promise<string[
   return Promise.all(pages.map((p) => p.locator(".gameover__title").innerText()));
 }
 
-test("three players play a full game to one winner, then rematch", async ({ browser }) => {
-  const pages = await startParty(browser, 3, { lives: "1" });
+test("three players play a full game to a podium, then rematch", async ({ browser }) => {
+  const pages = await startParty(browser, 3, { figures: "1", rounds: "10" });
   const results = await playUntilOver(pages);
-  expect(results.filter((r) => r === "You win!")).toHaveLength(1);
-  expect(results.filter((r) => r === "Game over")).toHaveLength(2);
+  expect(results.filter((r) => r === "You win!").length).toBeLessThanOrEqual(1);
+  for (const r of results) expect(r).toMatch(/^(You win!|Draw!|You came (1st|2nd|3rd))$/);
 
-  // Everyone's log names the same winner (as "You win!" for the winner themselves).
-  const winnerSeat = results.indexOf("You win!");
-  const logs = await Promise.all(pages.map((p) => p.locator(".log").innerText()));
-  logs.forEach((log, i) =>
-    expect(log).toContain(i === winnerSeat ? "🏆 You win!" : `🏆 ${NAMES[winnerSeat]} wins!`),
-  );
+  // Everyone sees the same standings, awards and series score.
+  const standings = await Promise.all(pages.map((p) => p.locator(".standings").innerText()));
+  const strip = (s: string) => s.replace(/ \(you\)/g, "");
+  for (const s of standings) expect(strip(s)).toBe(strip(standings[0]!));
+  await expect(pages[0]!.locator(".podium__spot")).not.toHaveCount(0);
+  await expect(pages[0]!.locator(".series tbody tr")).toHaveCount(3);
 
   for (const p of pages) await p.getByTestId("rematch").click();
-  for (const p of pages) await expect(p.getByTestId("open-book")).toBeVisible();
+  for (const p of pages) await expect(p.getByTestId("track")).toBeVisible();
   await expect(pages[0]!.locator(".roundbar__round")).toHaveText("Round 1");
+  await expect(pages[0]!.getByTestId("open-book")).toBeVisible();
 });
 
 test("a player who drops out mid-game reconnects to the same seat", async ({ browser }) => {
   const [host, guest] = (await startParty(browser, 2)) as [Page, Page];
-  for (let i = 0; i < 3; i++) await step([host, guest]);
+  for (let i = 0; i < 4; i++) await step([host, guest]);
 
   // The guest's tab navigates away (socket closes) ...
   const url = guest.url();
   await guest.goto("about:blank");
-  await expect(host.getByTestId("opp-1").locator(".opp__status")).toHaveText("offline");
+  await expect(host.getByTestId("status-1")).toHaveText("offline");
 
   // ... and comes back: the session in sessionStorage resumes the same seat.
   await guest.goto(url);
-  await expect(guest.locator(".myboard__name")).toContainText("Bala (you)");
-  await expect(host.getByTestId("opp-1").locator(".opp__status")).not.toHaveText("offline");
+  await expect(guest.getByTestId("player-1")).toContainText("Bala (you)");
+  await expect(host.getByTestId("status-1")).not.toHaveText("offline");
 
   // The game carries on for both.
   const round = Number((await host.locator(".roundbar__round").innerText()).replace(/\D/g, ""));
@@ -126,22 +137,26 @@ test("leaving mid-game knocks you out and the others play on", async ({ browser 
   c.once("dialog", (d) => void d.accept());
   await c.getByTestId("leave-game").click();
   await expect(c.getByRole("button", { name: "Create room" })).toBeVisible(); // back to the start
-  for (const p of [a, b])
-    await expect(p.getByTestId("opp-2").locator(".opp__status")).toHaveText("left");
+  for (const p of [a, b]) await expect(p.getByTestId("status-2")).toHaveText("left");
   await expect(a.locator(".log")).toContainText("Chitra left the game.");
 
-  // The round no longer waits for Chitra.
-  await a.getByTestId("open-book").click();
-  await b.getByTestId("open-book").click();
+  // Turns skip Chitra: Asha, Bala, then Asha again in round 2.
+  for (const p of [a, b]) {
+    await p.getByTestId("open-book").click();
+    await p.getByTestId("pass").click();
+  }
   await expect(a.locator(".roundbar__round")).toHaveText("Round 2");
+  await expect(a.getByTestId("open-book")).toBeVisible();
 });
 
-test("the round reveal plays back with motion on, and can be skipped", async ({ browser }) => {
+test("with motion on, each move plays back before the next turn", async ({ browser }) => {
   const [host, guest] = (await startParty(browser, 2, { reducedMotion: false })) as [Page, Page];
   await host.getByTestId("open-book").click();
-  await guest.getByTestId("open-book").click();
   await expect(host.getByTestId("revealing")).toBeVisible();
-  await host.getByTestId("skip").click();
-  await expect(host.getByTestId("revealing")).toHaveCount(0);
-  await expect(host.locator(".roundbar__round")).toHaveText("Round 2");
+  await expect(host.getByTestId("choices")).toBeVisible();
+  await expect(host.getByTestId("book")).toContainText(/roll \d+/);
+  await host.getByTestId("draw-0").click();
+  await expect(guest.getByTestId("revealing")).toBeVisible();
+  await expect(guest.getByTestId("open-book")).toBeVisible();
+  await expect(guest.locator(".log")).toContainText("Asha draws a face on A.");
 });

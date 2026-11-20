@@ -1,495 +1,513 @@
 import { describe, expect, it } from "vitest";
 import {
-  CARDS,
+  DEFAULT_RULES,
   EngineError,
-  PARTS,
+  RulesError,
   applyAction,
   cardForLuck,
-  createGame,
+  computeAwards,
+  createRng,
+  destination,
+  distance,
   isLuckyPage,
-  roundOrder,
-  slotForPage,
-  suggestTargets,
+  legalCardPlays,
+  legalMoves,
+  replay,
+  resolveRules,
+  rollForPage,
+  seriesPoints,
+  simulateGame,
   viewFor,
-  type GameEvent,
+  type GameState,
+  type Move,
+  type RulesConfig,
 } from "../src/index.js";
-import {
-  EVEN_PAGE,
-  LUCKY_EVEN,
-  LUCKY_ODD,
-  aim,
-  arrange,
-  card,
-  giveCards,
-  newGame,
-  open,
-  pageFor,
-  run,
-  slotOf,
-} from "./helpers.js";
+import { act, arrange, card, giveCards, newGame, open, pageFor, run, turn } from "./helpers.js";
 
-const types = (events: GameEvent[]) => events.map((e) => e.type);
+// Two players: track of 20 squares; P0 starts on 0, P1 on 10; stars on 0, 5, 10, 15.
 
-describe("pages", () => {
-  it("uses only the last digit; even digits are no game", () => {
-    expect(slotForPage(137)).toBe(7);
-    expect(slotForPage(299)).toBe(9);
-    for (const p of [10, 42, 124, 300]) expect(slotForPage(p)).toBeNull();
+describe("rules config", () => {
+  it("defaults", () => {
+    expect(resolveRules()).toEqual({
+      firstPlayer: "random",
+      bullets: "consumed",
+      totalPages: 300,
+      turnTimerSeconds: 20,
+      figures: 3,
+      luckyCards: true,
+      maxRounds: 40,
+    });
+    expect(Object.isFrozen(DEFAULT_RULES)).toBe(true);
   });
 
-  it("knows lucky pages", () => {
-    for (const p of [11, 22, 99, 100, 111, 200, 222, 300]) expect(isLuckyPage(p)).toBe(true);
-    for (const p of [1, 9, 10, 12, 101, 121, 212, 299]) expect(isLuckyPage(p)).toBe(false);
-  });
-
-  it("maps luck onto every card", () => {
-    expect(CARDS.map((_, i) => cardForLuck(i))).toEqual([...CARDS]);
-    expect(cardForLuck(5)).toBe(CARDS[0]);
-  });
-});
-
-describe("setup", () => {
-  it("takes 2 to 6 players", () => {
-    expect(() => newGame(1)).toThrow(EngineError);
-    expect(() => newGame(7)).toThrow(EngineError);
-    for (const n of [2, 6]) expect(newGame(n).players).toHaveLength(n);
-  });
-
-  it("starts round 1 with everyone pending", () => {
-    const g = newGame(3, {}, 1);
-    expect(g.round).toBe(1);
-    expect(g.pending.every((s) => s && !s.done)).toBe(true);
-    expect(g.log).toEqual([{ type: "RoundStarted", round: 1, order: [1, 2, 0] }]);
-  });
-
-  it("rejects a bad first seat", () => {
-    expect(() =>
-      createGame({
-        id: "x",
-        players: [
-          { id: "a", name: "A" },
-          { id: "b", name: "B" },
-        ],
-        firstSeat: 2,
-      }),
-    ).toThrow(EngineError);
+  it("rejects bad or unknown values", () => {
+    const bad = [
+      { totalPages: 305 },
+      { figures: 0 },
+      { figures: 6 },
+      { turnTimerSeconds: 2 },
+      { maxRounds: 0 },
+      { luckyCards: "yes" },
+      { bullets: "infinite" },
+      { lives: 3 },
+    ] as Partial<RulesConfig>[];
+    for (const r of bad) expect(() => resolveRules(r)).toThrow(RulesError);
+    expect(
+      resolveRules({ turnTimerSeconds: null, maxRounds: null, figures: undefined }),
+    ).toMatchObject({
+      turnTimerSeconds: null,
+      maxRounds: null,
+      figures: 3,
+    });
   });
 });
 
-describe("rounds", () => {
-  it("waits for everyone, then resolves all goes at once", () => {
-    const g = newGame(3);
-    const first = run(g, open(0, pageFor(5)), open(1, pageFor(3)));
-    expect(types(first.events)).toEqual(["PlayerReady", "PlayerReady"]);
-    expect(slotOf(first.state, 0, 5).stage).toBe(0); // nothing happens until the round resolves
-    const { state, events } = run(first.state, open(2, EVEN_PAGE));
-    expect(slotOf(state, 0, 5).stage).toBe(1);
-    expect(slotOf(state, 1, 3).stage).toBe(1);
-    expect(events).toContainEqual({ type: "TurnWasted", player: 2, reason: "even_digit" });
-    expect(state.round).toBe(2);
-    expect(events.at(-1)).toEqual({ type: "RoundStarted", round: 2, order: [1, 2, 0] });
+describe("book and board helpers", () => {
+  it("rolls the last digit, 0 counting as 10", () => {
+    expect([47, 30, 1, 299].map(rollForPage)).toEqual([7, 10, 1, 9]);
   });
 
-  it("resolves in the round order, which rotates each round", () => {
-    const g = newGame(3, {}, 2);
-    expect(roundOrder(g)).toEqual([2, 0, 1]);
-    const { state, events } = run(g, open(0, EVEN_PAGE), open(1, EVEN_PAGE), open(2, EVEN_PAGE));
-    const opened = events.flatMap((e) => (e.type === "BookOpened" ? [e.player] : []));
-    expect(opened).toEqual([2, 0, 1]);
-    expect(roundOrder(state)).toEqual([0, 1, 2]);
+  it("lucky pages", () => {
+    expect([11, 99, 111, 222, 100, 300].every(isLuckyPage)).toBe(true);
+    expect([10, 12, 101, 121, 7].some(isLuckyPage)).toBe(false);
+    expect(cardForLuck(0)).toBe("shield");
+    expect(cardForLuck(5)).toBe("reroll");
+    expect(cardForLuck(6)).toBe("shield");
   });
 
-  it("draws parts in order: head, body, face, gun, bullets", () => {
-    let s = newGame(2);
-    const drawn: string[] = [];
-    for (let i = 0; i < 5; i++) {
-      const r = run(s, open(0, pageFor(7, i + 1)), open(1, EVEN_PAGE));
-      for (const e of r.events) if (e.type === "PartDrawn") drawn.push(e.part);
-      s = r.state;
+  it("distance goes the short way round", () => {
+    expect(distance(20, 2, 18)).toBe(4);
+    expect(distance(20, 18, 2)).toBe(4);
+    expect(distance(20, 3, 9)).toBe(6);
+  });
+});
+
+describe("setup and turns", () => {
+  it("starts everyone with head-and-body figures at home", () => {
+    const g = newGame(3, { figures: 2 }, 1);
+    expect(g.trackLength).toBe(30);
+    expect(g.players[0]!.figures).toEqual([
+      { stage: 2, pos: null, dead: false, shielded: false },
+      { stage: 2, pos: null, dead: false, shielded: false },
+    ]);
+    expect(g.turn).toMatchObject({ player: 1, roll: null });
+    expect(g.log).toEqual([{ type: "TurnStarted", player: 1, round: 1, turn: 1 }]);
+  });
+
+  it("only the current player acts, and only after opening the book", () => {
+    const g = newGame(2);
+    expect(() => applyAction(g, open(1, 41))).toThrow(/not your turn/);
+    expect(() => applyAction(g, act(0, { kind: "pass" }))).toThrow(/Open the book/);
+    const opened = applyAction(g, open(0, 47)).state;
+    expect(opened.turn.roll).toBe(7);
+    expect(() => applyAction(opened, open(0, 41))).toThrow(/already opened/);
+    expect(() => applyAction(g, open(0, 301))).toThrow(EngineError);
+  });
+
+  it("turns go round the table and the round counts up", () => {
+    let g = newGame(3, {}, 1);
+    const seen: number[] = [];
+    for (let i = 0; i < 4; i++) {
+      seen.push(g.turn.player);
+      g = turn(g, 3, { kind: "pass" }).state;
     }
-    expect(drawn).toEqual([...PARTS]);
-    expect(slotOf(s, 0, 7).stage).toBe(5);
+    expect(seen).toEqual([1, 2, 0, 1]);
+    expect(g.round).toBe(2);
+    expect(g.turnNumber).toBe(5);
   });
 
-  it("allows one go per round", () => {
-    const s = run(newGame(2), open(0, EVEN_PAGE)).state;
-    expect(() => applyAction(s, open(0, EVEN_PAGE))).toThrow(EngineError);
+  it("players who are out are skipped", () => {
+    let g = newGame(3);
+    g = run(g, { type: "leave", player: 1 }).state;
+    g = turn(g, 3, { kind: "pass" }).state;
+    expect(g.turn.player).toBe(2);
+  });
+});
+
+describe("moves", () => {
+  it("drawing adds the next part, up to loaded", () => {
+    let g = newGame(2);
+    const r = turn(g, 3, { kind: "draw", figure: 1 });
+    expect(r.events).toContainEqual({
+      type: "PartDrawn",
+      player: 0,
+      figure: 1,
+      part: "face",
+      stage: 3,
+    });
+    g = arrange(newGame(2), { 0: { 0: { stage: 5 } } });
+    expect(() => turn(g, 3, { kind: "draw", figure: 0 })).toThrow(/complete/);
   });
 
-  it("validates pages and players", () => {
-    for (const page of [0, 301, 1.5])
-      expect(() => applyAction(newGame(), open(0, page))).toThrow(EngineError);
-    expect(() => applyAction(newGame(), open(5, 1))).toThrow(EngineError);
-    expect(() => applyAction(newGame(), open(0, 1, -1))).toThrow(EngineError);
+  it("a figure needs a face to walk; from home it enters on the start square", () => {
+    expect(() => turn(newGame(2), 3, { kind: "move", figure: 0 })).toThrow(/face/);
+    const g = arrange(newGame(2), { 0: { 0: { stage: 3 } } });
+    const r = turn(g, 1, { kind: "move", figure: 0 });
+    expect(r.events).toContainEqual({
+      type: "FigureMoved",
+      player: 0,
+      figure: 0,
+      from: null,
+      to: 0,
+    });
+    // P1 starts on square 10: a roll of 4 from home lands on 13.
+    const g2 = arrange(newGame(2, {}, 1), { 1: { 0: { stage: 3 } } });
+    expect(turn(g2, 4, { kind: "move", figure: 0 }).state.players[1]!.figures[0]!.pos).toBe(13);
   });
 
-  it("rolling your dead slot wastes the go (R6 default)", () => {
-    const g = arrange(newGame(2), { 7: "dead" });
-    const { events } = run(g, open(0, pageFor(7)), open(1, EVEN_PAGE));
-    expect(events).toContainEqual({ type: "TurnWasted", player: 0, reason: "slot_eliminated" });
+  it("walking wraps round the loop", () => {
+    const g = arrange(newGame(2), { 0: { 0: { stage: 3, pos: 17 } } });
+    expect(destination(g, 0, 0, 6)).toBe(3);
+    expect(turn(g, 6, { kind: "move", figure: 0 }).state.players[0]!.figures[0]!.pos).toBe(3);
   });
 
-  it("R6 reroll: open again until a live slot or even page", () => {
-    const g = arrange(newGame(2, { ownDeadSlot: "reroll" }), { 7: "dead", 9: "dead" });
-    const a = run(g, open(0, pageFor(7)), open(0, pageFor(9)));
-    expect(a.state.pending[0]?.done).toBe(false);
-    const { state, events } = run(a.state, open(0, pageFor(3)), open(1, EVEN_PAGE));
-    expect(events.filter((e) => e.type === "RerollGranted")).toHaveLength(2);
-    expect(slotOf(state, 0, 3).stage).toBe(1);
+  it("landing on an enemy stomps it home and it drops its gun", () => {
+    const g = arrange(newGame(2), {
+      0: { 0: { stage: 3, pos: 2 } },
+      1: { 0: { stage: 5, pos: 8 } },
+    });
+    const r = turn(g, 6, { kind: "move", figure: 0 });
+    expect(r.events).toContainEqual({
+      type: "Stomped",
+      player: 0,
+      figure: 0,
+      target: 1,
+      targetFigure: 0,
+      stage: 3,
+    });
+    expect(r.state.players[1]!.figures[0]).toMatchObject({ pos: null, stage: 3, dead: false });
+    expect(r.state.players[0]!.stats.stomps).toBe(1);
+  });
+
+  it("stars are safe from stomps, and a shield takes the stomp", () => {
+    const onStar = arrange(newGame(2), {
+      0: { 0: { stage: 3, pos: 2 } },
+      1: { 0: { stage: 4, pos: 5 } },
+    });
+    expect(turn(onStar, 3, { kind: "move", figure: 0 }).state.players[1]!.figures[0]!.pos).toBe(5);
+    const shielded = arrange(newGame(2), {
+      0: { 0: { stage: 3, pos: 2 } },
+      1: { 0: { stage: 4, pos: 6, shielded: true } },
+    });
+    const r = turn(shielded, 4, { kind: "move", figure: 0 });
+    expect(r.events.map((e) => e.type)).toContain("ShieldBroken");
+    expect(r.state.players[1]!.figures[0]).toMatchObject({ pos: 6, shielded: false });
   });
 });
 
 describe("shooting", () => {
-  it("with one opponent, an armed slot fires at them automatically", () => {
-    const g = arrange(newGame(2), { 9: 5 }, { 9: 4 });
-    const r1 = run(g, open(0, pageFor(9)));
-    expect(r1.state.pending[0]).toMatchObject({ done: true, needsTarget: false, targets: [1] });
-    const { state, events } = run(r1.state, open(1, EVEN_PAGE));
-    expect(events).toContainEqual({ type: "SlotEliminated", attacker: 0, target: 1, slot: 9 });
-    expect(slotOf(state, 1, 9).status).toBe("eliminated");
-    expect(slotOf(state, 0, 9).stage).toBe(4); // R5: bullets consumed
-  });
-
-  it("with several opponents, the player picks a target", () => {
-    const g = arrange(newGame(3), { 5: 5 }, { 5: 4 }, { 5: 4 });
-    const r1 = run(g, open(0, pageFor(5)));
-    expect(r1.state.pending[0]).toMatchObject({ done: false, needsTarget: true });
-    expect(() => applyAction(r1.state, aim(0, 0))).toThrow(EngineError);
-    expect(() => applyAction(r1.state, aim(0, 1, 2))).toThrow(EngineError);
-    expect(() => applyAction(r1.state, open(0, 1))).toThrow(EngineError);
-    const { state } = run(r1.state, aim(0, 2), open(1, EVEN_PAGE), open(2, EVEN_PAGE));
-    expect(slotOf(state, 2, 5).status).toBe("eliminated");
-    expect(slotOf(state, 1, 5).status).toBe("alive");
-  });
-
-  it("can't aim without an armed roll", () => {
-    expect(() => applyAction(newGame(3), aim(0, 1))).toThrow(EngineError);
-  });
-
-  it("misses an empty or partial slot, and an already dead one", () => {
-    const g = arrange(newGame(2), { 1: 5, 3: 5 }, { 1: 3, 3: "dead" });
-    const a = run(g, open(0, pageFor(1)), open(1, EVEN_PAGE));
-    expect(a.events).toContainEqual({
-      type: "AttackMissed",
-      attacker: 0,
-      target: 1,
-      slot: 1,
-      reason: "target_unarmed",
+  const duel = () =>
+    arrange(newGame(2, { figures: 2 }), {
+      0: { 0: { stage: 5, pos: 7 } },
+      1: { 0: { stage: 4, pos: 11 }, 1: { stage: 3, pos: 3 } },
     });
-    const b = run(a.state, open(0, pageFor(3)), open(1, EVEN_PAGE));
-    expect(b.events).toContainEqual({
-      type: "AttackMissed",
-      attacker: 0,
-      target: 1,
-      slot: 3,
-      reason: "target_eliminated",
-    });
-  });
 
-  it("R4 destroy_partial wipes a partial figure", () => {
-    const g = arrange(newGame(2, { unarmedTarget: "destroy_partial" }), { 1: 5 }, { 1: 3 });
-    const { state } = run(g, open(0, pageFor(1)), open(1, EVEN_PAGE));
-    expect(slotOf(state, 1, 1)).toMatchObject({ stage: 0, status: "alive" });
-  });
-
-  it("R5 reusable keeps the figure armed", () => {
-    const g = arrange(newGame(2, { bullets: "reusable" }), { 1: 5 });
-    const { state } = run(g, open(0, pageFor(1)), open(1, EVEN_PAGE));
-    expect(slotOf(state, 0, 1).stage).toBe(5);
-  });
-
-  it("a shield blocks one shot, then is gone", () => {
-    const g = arrange(newGame(2), { 1: 5 }, { 1: "shield" });
-    const a = run(g, open(0, pageFor(1)), open(1, EVEN_PAGE));
-    expect(a.events).toContainEqual({ type: "ShotBlocked", attacker: 0, target: 1, slot: 1 });
-    expect(slotOf(a.state, 1, 1)).toMatchObject({ status: "alive", shielded: false });
-    const b = run(a.state, open(0, EVEN_PAGE), open(1, EVEN_PAGE));
-    const c = run(b.state, open(0, pageFor(1)), open(1, EVEN_PAGE)); // reload
-    const d = run(c.state, open(0, pageFor(1, 2)), open(1, EVEN_PAGE));
-    expect(slotOf(d.state, 1, 1).status).toBe("eliminated");
-  });
-
-  it("suggests the most valuable target", () => {
-    const g = arrange(newGame(4), {}, { 5: 2 }, { 5: "shield" }, { 5: 4 });
-    expect(suggestTargets(g, 0, 5)).toEqual([3]);
-    expect(suggestTargets(g, 0, 5, 3)).toEqual([3, 2, 1]);
-  });
-});
-
-describe("lives and winning", () => {
-  it("losing your 3rd slot knocks you out; the last player standing wins", () => {
-    const g = arrange(newGame(2), { 9: 5 }, { 1: "dead", 3: "dead", 9: 4 });
-    const { state, events } = run(g, open(0, pageFor(9)), open(1, EVEN_PAGE));
-    expect(events).toContainEqual({ type: "PlayerOut", player: 1, reason: "shot", by: 0 });
-    expect(events.at(-1)).toEqual({ type: "GameOver", winner: 0, reason: "last_standing" });
-    expect(state).toMatchObject({ phase: "finished", winner: 0, endReason: "last_standing" });
-    expect(() => applyAction(state, open(0, 1))).toThrow(EngineError);
-  });
-
-  it("with 3 players the game goes on after the first knock-out", () => {
-    const g = arrange(newGame(3), { 9: 5 }, { 1: "dead", 3: "dead", 9: 4 });
-    const a = run(g, open(0, pageFor(9)), aim(0, 1), open(1, EVEN_PAGE), open(2, EVEN_PAGE));
-    expect(a.state.phase).toBe("playing");
-    expect(a.state.players[1]!.out).toBe(true);
-    expect(a.state.pending[1]).toBeNull();
-    expect(() => applyAction(a.state, open(1, 1))).toThrow(EngineError);
-    // Two players left: the round only waits for them.
-    const b = run(a.state, open(0, EVEN_PAGE), open(2, EVEN_PAGE));
-    expect(b.state.round).toBe(3);
-  });
-
-  it("someone knocked out earlier in the order loses their go; shots at them miss", () => {
-    // Order is 0, 1, 2. P0 knocks out P2; P1 had aimed at P2.
-    const g = arrange(newGame(3), { 9: 5 }, { 9: 5 }, { 1: "dead", 3: "dead", 9: 4 });
-    const { events } = run(
-      g,
-      open(0, pageFor(9)),
-      aim(0, 2),
-      open(1, pageFor(9)),
-      aim(1, 2),
-      open(2, pageFor(9)),
-    );
-    expect(events).toContainEqual({ type: "PlayerOut", player: 2, reason: "shot", by: 0 });
-    expect(events).toContainEqual({
-      type: "AttackMissed",
-      attacker: 1,
-      target: 2,
-      slot: 9,
-      reason: "target_out",
-    });
-    expect(events).toContainEqual({ type: "GoLost", player: 2 });
-  });
-
-  it("lives is configurable", () => {
-    const g = arrange(newGame(2, { lives: 1 }), { 9: 5 }, { 9: 4 });
-    expect(run(g, open(0, pageFor(9)), open(1, EVEN_PAGE)).state.winner).toBe(0);
-  });
-
-  it("leaving knocks you out, and can end the game", () => {
-    const g = newGame(3);
-    const a = run(g, open(0, EVEN_PAGE), open(1, EVEN_PAGE), { type: "leave", player: 2 });
-    expect(a.events).toContainEqual({ type: "PlayerOut", player: 2, reason: "left", by: null });
-    expect(a.state.round).toBe(2); // everyone else was done, so the round resolved
-    const b = run(a.state, { type: "leave", player: 0 });
-    expect(b.state).toMatchObject({ phase: "finished", winner: 1, endReason: "last_standing" });
-  });
-
-  it("stalemate: most living slots wins, a tie draws", () => {
-    const dead = (...keep: number[]) =>
-      Object.fromEntries([1, 3, 5, 7, 9].filter((n) => !keep.includes(n)).map((n) => [n, "dead"]));
-    const lone = arrange(newGame(3, { lives: 5 }), dead(1, 7), dead(3), dead(5));
-    const a = run(lone, open(0, EVEN_PAGE), open(1, EVEN_PAGE), open(2, EVEN_PAGE));
-    expect(a.state).toMatchObject({ phase: "finished", winner: 0, endReason: "stalemate" });
-    const tie = arrange(newGame(2, { lives: 5 }), dead(1), dead(3));
-    expect(run(tie, open(0, EVEN_PAGE), open(1, EVEN_PAGE)).state.winner).toBeNull();
-    const drawMode = arrange(
-      newGame(3, { lives: 5, stalemate: "draw" }),
-      dead(1, 7),
-      dead(3),
-      dead(5),
-    );
-    expect(
-      run(drawMode, open(0, EVEN_PAGE), open(1, EVEN_PAGE), open(2, EVEN_PAGE)).state.winner,
-    ).toBeNull();
-  });
-});
-
-describe("lucky cards", () => {
-  it("a lucky page gives a card when the round resolves, on top of its normal effect", () => {
-    const a = run(newGame(2), open(0, LUCKY_ODD, 2));
-    expect(a.state.players[0]!.hand).toEqual([]);
-    const { state, events } = run(a.state, open(1, EVEN_PAGE));
-    expect(events).toContainEqual({ type: "CardDrawn", player: 0, card: CARDS[2] });
-    expect(state.players[0]!.hand).toEqual([CARDS[2]]);
-    expect(slotOf(state, 0, 1).stage).toBe(1);
-  });
-
-  it("an even lucky page still gives a card", () => {
-    const { state } = run(newGame(2), open(0, LUCKY_EVEN, 0), open(1, EVEN_PAGE));
-    expect(state.players[0]!.hand).toEqual(["shield"]);
-  });
-
-  it("holds at most 3 cards", () => {
-    const g = giveCards(newGame(2), 0, "shield", "shield", "steal");
-    const { state, events } = run(g, open(0, LUCKY_ODD), open(1, EVEN_PAGE));
-    expect(events).toContainEqual({ type: "HandFull", player: 0 });
-    expect(state.players[0]!.hand).toHaveLength(3);
-  });
-
-  it("no cards when luckyCards is off", () => {
-    const { state } = run(
-      newGame(2, { luckyCards: false }),
-      open(0, LUCKY_ODD),
-      open(1, EVEN_PAGE),
-    );
-    expect(state.players[0]!.hand).toEqual([]);
-  });
-
-  it("cards are played before opening the book, and must be held", () => {
-    const g = giveCards(newGame(2), 0, "shield");
-    expect(() => applyAction(g, card(0, { card: "eraser", target: 1, slot: 1 }))).toThrow(
-      EngineError,
-    );
-    const opened = run(g, open(0, EVEN_PAGE)).state;
-    expect(() => applyAction(opened, card(0, { card: "shield", slot: 1 }))).toThrow(EngineError);
-    const queued = run(g, card(0, { card: "shield", slot: 1 })).state;
-    expect(queued.pending[0]?.card).toEqual({ card: "shield", slot: 1 });
-    expect(run(queued, card(0, null)).state.pending[0]?.card).toBeNull();
-  });
-
-  it("shield", () => {
-    const g = giveCards(arrange(newGame(2), {}, { 3: 5 }), 0, "shield");
-    const { state, events } = run(
-      g,
-      card(0, { card: "shield", slot: 3 }),
-      open(0, EVEN_PAGE),
-      open(1, pageFor(3)),
-    );
-    expect(events).toContainEqual({ type: "ShieldRaised", player: 0, slot: 3 });
-    // P0 resolves first (order 0, 1), so the shield is up before P1's shot and soaks it up.
-    expect(events).toContainEqual({ type: "ShotBlocked", attacker: 1, target: 0, slot: 3 });
-    expect(slotOf(state, 0, 3).shielded).toBe(false);
-    expect(state.players[0]!.hand).toEqual([]);
-  });
-
-  it("eraser removes the top part; on an armed figure, its bullets", () => {
-    const g = giveCards(arrange(newGame(2), {}, { 5: 5 }), 0, "eraser");
-    const { state, events } = run(
-      g,
-      card(0, { card: "eraser", target: 1, slot: 5 }),
-      open(0, EVEN_PAGE),
-      open(1, EVEN_PAGE),
-    );
-    expect(events).toContainEqual({ type: "PartErased", player: 0, target: 1, slot: 5, stage: 4 });
-    expect(slotOf(state, 1, 5).stage).toBe(4);
-    expect(() =>
-      applyAction(
-        giveCards(newGame(2), 0, "eraser"),
-        card(0, { card: "eraser", target: 1, slot: 5 }),
-      ),
-    ).toThrow(EngineError);
-  });
-
-  it("swap exchanges two living figures and their shields", () => {
-    const g = giveCards(arrange(newGame(2), { 1: "shield", 9: 1 }), 0, "swap");
-    const { state } = run(
-      g,
-      card(0, { card: "swap", slots: [1, 9] }),
-      open(0, EVEN_PAGE),
-      open(1, EVEN_PAGE),
-    );
-    expect(slotOf(state, 0, 9)).toMatchObject({ stage: 5, shielded: true });
-    expect(slotOf(state, 0, 1)).toMatchObject({ stage: 1, shielded: false });
-  });
-
-  it("steal unloads their gun and loads yours if it has a gun", () => {
-    const g = giveCards(arrange(newGame(2), { 7: 4 }, { 7: 5 }), 0, "steal");
-    const { state, events } = run(
-      g,
-      card(0, { card: "steal", target: 1, slot: 7 }),
-      open(0, EVEN_PAGE),
-      open(1, EVEN_PAGE),
-    );
-    expect(events).toContainEqual({
-      type: "BulletsStolen",
-      player: 0,
-      target: 1,
-      slot: 7,
-      loaded: true,
-    });
-    expect([slotOf(state, 0, 7).stage, slotOf(state, 1, 7).stage]).toEqual([5, 4]);
-  });
-
-  it("a stolen load can fire the same round, aimed automatically", () => {
-    const g = giveCards(arrange(newGame(3), { 7: 4 }, { 7: 5 }, { 7: 4 }), 0, "steal");
-    const { events } = run(
-      g,
-      card(0, { card: "steal", target: 1, slot: 7 }),
-      open(0, pageFor(7)), // slot 7 is only a gun now, so no target is asked for
-      open(1, EVEN_PAGE),
-      open(2, EVEN_PAGE),
-    );
-    expect(events.find((e) => e.type === "ShotFired")).toMatchObject({ attacker: 0, slot: 7 });
-  });
-
-  it("double shot hits two players, and is kept if you don't fire", () => {
-    const g = giveCards(
-      arrange(newGame(3), { 1: 5 }, { 1: 4 }, { 1: 4 }),
-      0,
-      "double_shot",
-      "double_shot",
-    );
-    const a = run(g, card(0, { card: "double_shot" }), open(0, pageFor(1)));
-    expect(a.state.pending[0]?.done).toBe(true); // two opponents: both are the targets
-    const b = run(a.state, open(1, EVEN_PAGE), open(2, EVEN_PAGE));
-    expect(b.events).toContainEqual({ type: "ShotFired", attacker: 0, targets: [1, 2], slot: 1 });
-    expect([slotOf(b.state, 1, 1).status, slotOf(b.state, 2, 1).status]).toEqual([
-      "eliminated",
-      "eliminated",
+  it("a loaded figure shoots anything exposed within the roll", () => {
+    const g = applyAction(duel(), open(0, pageFor(4))).state;
+    const shots = legalMoves(g, 0).filter((m) => m.kind === "shoot");
+    expect(shots).toEqual([
+      { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 0 }] },
+      { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 1 }] },
     ]);
-    expect(b.state.players[0]!.hand).toEqual(["double_shot"]);
-    const c = run(
-      b.state,
-      card(0, { card: "double_shot" }),
-      open(0, EVEN_PAGE),
-      open(1, EVEN_PAGE),
-      open(2, EVEN_PAGE),
-    );
-    expect(c.state.players[0]!.hand).toEqual(["double_shot"]);
+    const r = applyAction(g, act(0, shots[0]!));
+    expect(r.events.map((e) => e.type)).toEqual([
+      "ShotFired",
+      "FigureKilled",
+      "BulletsSpent",
+      "TurnStarted",
+    ]);
+    expect(r.state.players[1]!.figures[0]).toMatchObject({ dead: true, pos: null });
+    expect(r.state.players[0]!.figures[0]!.stage).toBe(4);
+    expect(r.state.players[0]!.stats).toMatchObject({ kills: 1, shots: 1 });
+    expect(r.state.players[1]!.stats.deaths).toBe(1);
   });
 
-  it("double shot with 4 players asks for two different targets", () => {
-    const g = giveCards(arrange(newGame(4), { 1: 5 }), 0, "double_shot");
-    const a = run(g, card(0, { card: "double_shot" }), open(0, pageFor(1)));
-    expect(a.state.pending[0]?.needsTarget).toBe(true);
-    expect(() => applyAction(a.state, aim(0, 1))).toThrow(EngineError);
-    expect(() => applyAction(a.state, aim(0, 1, 1))).toThrow(EngineError);
-    expect(run(a.state, aim(0, 1, 3)).state.pending[0]?.targets).toEqual([1, 3]);
+  it("refuses shots out of range, from a star, or at a star", () => {
+    const shoot: Move = { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 0 }] };
+    expect(() => turn(duel(), 3, shoot)).toThrow(/range/);
+    const fromStar = arrange(duel(), { 0: { 0: { pos: 10 - 0 + 5 } } });
+    expect(() => turn(fromStar, 9, shoot)).toThrow(/can't shoot/);
+    const atStar = arrange(duel(), { 1: { 0: { pos: 10 } } });
+    expect(() => turn(atStar, 9, shoot)).toThrow(/range/);
   });
 
-  it("double shot needs two opponents", () => {
-    const g = giveCards(newGame(2), 0, "double_shot");
-    expect(() => applyAction(g, card(0, { card: "double_shot" }))).toThrow(EngineError);
+  it("figures at home can be shot, measured to their start square", () => {
+    const g = arrange(newGame(2), { 0: { 0: { stage: 5, pos: 7 } } });
+    // P1's home is at square 10, 3 away.
+    expect(() =>
+      turn(g, 2, { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 2 }] }),
+    ).toThrow();
+    const r = turn(g, 3, { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 2 }] });
+    expect(r.state.players[1]!.figures[2]!.dead).toBe(true);
   });
 
-  it("a card whose target is gone fizzles and returns to the hand", () => {
-    // Order 0, 1, 2: P0 knocks out P2 before P1's eraser on P2 resolves.
-    const g = giveCards(
-      arrange(newGame(3), { 9: 5 }, {}, { 1: "dead", 3: "dead", 9: 5 }),
-      1,
-      "eraser",
-    );
-    const { state, events } = run(
-      g,
-      open(0, pageFor(9)),
-      aim(0, 2),
-      card(1, { card: "eraser", target: 2, slot: 9 }),
-      open(1, EVEN_PAGE),
-      open(2, EVEN_PAGE),
-    );
-    expect(events).toContainEqual({ type: "CardFizzled", player: 1, card: "eraser" });
-    expect(state.players[1]!.hand).toEqual(["eraser"]);
+  it("reusable bullets stay loaded", () => {
+    const g = arrange(newGame(2, { bullets: "reusable" }), { 0: { 0: { stage: 5, pos: 7 } } });
+    const r = turn(g, 3, { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 0 }] });
+    expect(r.state.players[0]!.figures[0]!.stage).toBe(5);
+  });
+
+  it("losing your last figure knocks you out, and the last one standing wins", () => {
+    let g = newGame(3, { figures: 1 });
+    g = arrange(g, { 0: { 0: { stage: 5, pos: 8 } } });
+    // P1's home (square 10) is 2 away.
+    const r = turn(g, 2, { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 0 }] });
+    expect(r.events).toContainEqual({
+      type: "PlayerOut",
+      player: 1,
+      reason: "shot",
+      by: 0,
+      place: 3,
+    });
+    expect(r.state.turn.player).toBe(2);
+    g = run(r.state, { type: "leave", player: 2 }).state;
+    expect(g.phase).toBe("finished");
+    expect(g.winner).toBe(0);
+    expect(g.endReason).toBe("last_standing");
+    expect(g.players.map((p) => p.place)).toEqual([1, 3, 2]);
+    expect(g.log.at(-1)).toEqual({
+      type: "GameOver",
+      winner: 0,
+      reason: "last_standing",
+      places: [1, 3, 2],
+    });
+    expect(() => applyAction(g, open(0, 41))).toThrow(/over/);
   });
 });
 
-describe("views", () => {
-  it("hide other players' hands and unfinished goes", () => {
-    const g = giveCards(newGame(3), 1, "shield");
-    const s = run(g, open(1, pageFor(3))).state;
-    const v = viewFor(s, 0);
-    expect(v.players[1]).toMatchObject({ hand: null, handSize: 1 });
-    expect(v.pending[1]).toEqual({ hidden: true, done: true });
-    expect(v.pending[0]).toMatchObject({ pages: [] });
-    expect("history" in v).toBe(false);
-    const own = viewFor(s, 1);
-    expect(own.players[1]!.hand).toEqual(["shield"]);
-    expect(own.pending[1]).toMatchObject({ pages: [pageFor(3)] });
+describe("cards", () => {
+  it("a lucky page draws a card; a full hand doesn't", () => {
+    const r = run(newGame(2), open(0, 111, 4));
+    expect(r.events).toContainEqual({ type: "CardDrawn", player: 0, card: "steal" });
+    const full = giveCards(newGame(2), 0, "shield", "shield", "shield");
+    expect(run(full, open(0, 222)).events).toContainEqual({ type: "HandFull", player: 0 });
+    expect(run(newGame(2, { luckyCards: false }), open(0, 111)).state.players[0]!.hand).toEqual([]);
   });
 
-  it("hide which card someone else drew", () => {
-    const s = run(newGame(2), open(0, LUCKY_ODD, 1), open(1, EVEN_PAGE)).state;
-    const drawn = (v: ReturnType<typeof viewFor>) => v.log.find((e) => e.type === "CardDrawn");
-    expect(drawn(viewFor(s, 0))).toEqual({ type: "CardDrawn", player: 0, card: CARDS[1] });
-    expect(drawn(viewFor(s, 1))).toEqual({ type: "CardDrawn", player: 0, card: null });
+  it("cards are played after opening the book, one per turn", () => {
+    const g = giveCards(newGame(2), 0, "shield", "shield");
+    expect(() => run(g, card(0, { card: "shield", figure: 0 }))).toThrow(/Open the book/);
+    const r = run(g, open(0, 41), card(0, { card: "shield", figure: 0 }));
+    expect(r.state.players[0]!.figures[0]!.shielded).toBe(true);
+    expect(r.state.players[0]!.hand).toEqual(["shield"]);
+    expect(() => run(r.state, card(0, { card: "shield", figure: 1 }))).toThrow(/one card/);
+    expect(() => run(newGame(2), open(0, 41), card(0, { card: "shield", figure: 0 }))).toThrow(
+      /don't hold/,
+    );
+  });
+
+  it("a shield takes a shot", () => {
+    const g = arrange(newGame(2), {
+      0: { 0: { stage: 5, pos: 7 } },
+      1: { 0: { stage: 4, pos: 9, shielded: true } },
+    });
+    const r = turn(g, 3, { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 0 }] });
+    expect(r.events.map((e) => e.type)).toContain("ShieldBroken");
+    expect(r.state.players[1]!.figures[0]).toMatchObject({ dead: false, shielded: false });
+  });
+
+  it("double shot hits two targets in range", () => {
+    let g = arrange(newGame(2), {
+      0: { 0: { stage: 5, pos: 7 } },
+      1: { 0: { stage: 4, pos: 9 }, 1: { stage: 3, pos: 4 } },
+    });
+    g = giveCards(g, 0, "double_shot");
+    g = run(g, open(0, pageFor(3))).state;
+    expect(legalCardPlays(g, 0)).toContainEqual({ card: "double_shot" });
+    const r = run(
+      g,
+      card(0, { card: "double_shot" }),
+      act(0, {
+        kind: "shoot",
+        figure: 0,
+        targets: [
+          { player: 1, figure: 0 },
+          { player: 1, figure: 1 },
+        ],
+      }),
+    );
+    expect(r.state.players[1]!.figures.filter((f) => f.dead)).toHaveLength(2);
+    // Without the card, two targets are refused.
+    expect(() =>
+      turn(
+        arrange(newGame(2), {
+          0: { 0: { stage: 5, pos: 7 } },
+          1: { 0: { stage: 4, pos: 9 }, 1: { stage: 3, pos: 4 } },
+        }),
+        3,
+        {
+          kind: "shoot",
+          figure: 0,
+          targets: [
+            { player: 1, figure: 0 },
+            { player: 1, figure: 1 },
+          ],
+        },
+      ),
+    ).toThrow(/one target/);
+  });
+
+  it("eraser, steal and swap", () => {
+    let g = arrange(newGame(2), {
+      0: { 0: { stage: 4, pos: 2 } },
+      1: { 0: { stage: 5, pos: 12 }, 1: { stage: 1, pos: 16 } },
+    });
+    g = giveCards(g, 0, "eraser", "steal", "swap");
+    g = run(g, open(0, 41)).state;
+    const erased = run(g, card(0, { card: "eraser", target: 1, targetFigure: 0 })).state;
+    expect(erased.players[1]!.figures[0]!.stage).toBe(4);
+    const erasedToNothing = run(g, card(0, { card: "eraser", target: 1, targetFigure: 1 })).state;
+    expect(erasedToNothing.players[1]!.figures[1]).toMatchObject({ stage: 0, pos: null });
+    const stolen = run(g, card(0, { card: "steal", figure: 0, target: 1, targetFigure: 0 })).state;
+    expect(stolen.players[0]!.figures[0]!.stage).toBe(5);
+    expect(stolen.players[1]!.figures[0]!.stage).toBe(4);
+    const swapped = run(g, card(0, { card: "swap", figure: 0, target: 1, targetFigure: 0 })).state;
+    expect(swapped.players[0]!.figures[0]!.pos).toBe(12);
+    expect(swapped.players[1]!.figures[0]!.pos).toBe(2);
+    // A home figure can't swap; steal needs your own unloaded gun.
+    expect(() =>
+      run(g, card(0, { card: "swap", figure: 1, target: 1, targetFigure: 0 })),
+    ).toThrow();
+    expect(() =>
+      run(g, card(0, { card: "steal", figure: 1, target: 1, targetFigure: 0 })),
+    ).toThrow();
+  });
+
+  it("reroll opens the book again", () => {
+    const g = giveCards(newGame(2), 0, "reroll");
+    const r = run(g, open(0, 42), card(0, { card: "reroll" }, 49));
+    expect(r.state.turn.roll).toBe(9);
+    expect(r.events.filter((e) => e.type === "BookOpened")).toHaveLength(2);
+    expect(() => run(g, open(0, 42), card(0, { card: "reroll" }))).toThrow(/new page/);
+  });
+});
+
+describe("leaving and the round limit", () => {
+  it("leaving on your turn passes the turn on", () => {
+    const g = run(newGame(3), open(0, 41), { type: "leave", player: 0 });
+    expect(g.state.turn.player).toBe(1);
+    expect(g.state.players[0]).toMatchObject({ out: true, place: 3 });
+    expect(g.state.players[0]!.figures.every((f) => f.dead)).toBe(true);
+  });
+
+  it("after the last round, most figures left wins, then most kills; ties share a place", () => {
+    let g = newGame(3, { maxRounds: 1 });
+    g = arrange(g, { 1: { 0: { dead: true } }, 2: { 0: { dead: true } } });
+    g.players[2]!.stats.kills = 2;
+    for (let i = 0; i < 3; i++) g = turn(g, 3, { kind: "pass" }).state;
+    expect(g.phase).toBe("finished");
+    expect(g.endReason).toBe("time_up");
+    expect(g.round).toBe(1);
+    expect(g.winner).toBe(0);
+    expect(g.players.map((p) => p.place)).toEqual([1, 3, 2]);
+
+    let tie = newGame(2, { maxRounds: 1 });
+    for (let i = 0; i < 2; i++) tie = turn(tie, 3, { kind: "pass" }).state;
+    expect(tie.winner).toBeNull();
+    expect(tie.players.map((p) => p.place)).toEqual([1, 1]);
+  });
+});
+
+describe("views, purity and replay", () => {
+  it("hides other players' cards", () => {
+    let g = giveCards(newGame(2), 1, "shield");
+    g = run(g, open(0, 111)).state;
+    const v = viewFor(g, 1);
+    expect(v.players[1]!.hand).toEqual(["shield"]);
+    expect(v.players[0]).toMatchObject({ hand: null, handSize: 1 });
+    expect(v.log.find((e) => e.type === "CardDrawn")).toEqual({
+      type: "CardDrawn",
+      player: 0,
+      card: null,
+    });
+    expect("history" in v).toBe(false);
+    expect(viewFor(g, 1, 0).log).toEqual([]);
+  });
+
+  it("never mutates the input and replays to the same state", () => {
+    for (const players of [2, 4, 6]) {
+      const { state } = simulateGame({ random: createRng(players), players });
+      const initial = newGame(players, {}, state.firstSeat);
+      initial.id = "sim";
+      initial.players.forEach((p, i) => {
+        p.id = `b${i}`;
+        p.name = `Bot ${i}`;
+      });
+      initial.rules = state.rules;
+      const snapshot = structuredClone(initial);
+      expect(replay(initial, state.history)).toEqual(state);
+      expect(initial).toEqual(snapshot);
+    }
+  });
+});
+
+describe("bot games", () => {
+  it("always finish with a full, consistent podium", () => {
+    const random = createRng(2024);
+    for (let i = 0; i < 150; i++) {
+      const players = 2 + (i % 5);
+      const { state, terminated } = simulateGame({ random, players });
+      expect(terminated).toBe(true);
+      check(state);
+    }
+  });
+});
+
+function check(g: GameState) {
+  const places = g.players.map((p) => p.place!);
+  expect(places.every((p) => p >= 1 && p <= g.players.length)).toBe(true);
+  if (g.winner !== null) {
+    expect(places[g.winner]).toBe(1);
+    expect(places.filter((p) => p === 1)).toHaveLength(1);
+  }
+  if (g.endReason === "last_standing")
+    expect(g.players.filter((p) => !p.out)).toHaveLength(g.winner === null ? 0 : 1);
+  // Competition ranking: a place k means exactly k-1 players finished ahead.
+  for (const p of places) expect(places.filter((q) => q < p)).toHaveLength(p - 1);
+  for (const p of g.players) for (const f of p.figures) if (f.dead) expect(f.pos).toBeNull();
+}
+
+describe("awards and series points", () => {
+  const stats = (s: Partial<GameState["players"][0]["stats"]>, alive = 1) => ({
+    stats: {
+      kills: 0,
+      stomps: 0,
+      parts: 0,
+      shots: 0,
+      cardsPlayed: 0,
+      deaths: 0,
+      rollTotal: 0,
+      rolls: 0,
+      squares: 0,
+      ...s,
+    },
+    figures: [{ dead: alive < 1 }, { dead: alive < 2 }],
+  });
+
+  it("go to a single best player", () => {
+    const awards = computeAwards([
+      stats({ kills: 3, rolls: 4, rollTotal: 32 }, 2),
+      stats({ kills: 1, stomps: 2, rolls: 4, rollTotal: 8 }, 0),
+      stats({ kills: 1, rolls: 2, rollTotal: 20 }, 0),
+    ]);
+    expect(awards).toEqual([
+      { id: "sharpshooter", player: 0, value: 3 },
+      { id: "stomper", player: 1, value: 2 },
+      { id: "survivor", player: 0, value: 2 },
+      { id: "lucky", player: 0, value: 8 },
+      { id: "unlucky", player: 1, value: 2 },
+    ]);
+    // A tie gives nobody the award.
+    expect(
+      computeAwards([stats({ kills: 1 }), stats({ kills: 1 })]).some(
+        (a) => a.id === "sharpshooter",
+      ),
+    ).toBe(false);
+  });
+
+  it("series points: 3, 2, 1, and last place never scores", () => {
+    expect([1, 2, 3, 4].map((p) => seriesPoints(p, 4))).toEqual([3, 2, 1, 0]);
+    expect([1, 2].map((p) => seriesPoints(p, 2))).toEqual([3, 0]);
+    expect(seriesPoints(1, 1)).toBe(0);
   });
 });

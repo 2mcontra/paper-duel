@@ -146,15 +146,19 @@ function Rules({
         const meta = RULE_LABELS[key]!;
         let options: [string, string][];
         let parse: (v: string) => RulesConfig[typeof key];
-        if (key === "lives") {
+        if (key === "figures") {
           options = [1, 2, 3, 4, 5].map((n) => [
             String(n),
             n === 2 ? "2 (quick game)" : n === 3 ? "3 (standard)" : String(n),
           ]);
           parse = Number;
-        } else if (key === "roundTimerSeconds") {
+        } else if (key === "turnTimerSeconds") {
           options = [10, 15, 20, 30, 60].map((n) => [String(n), `${n} s`]);
           options.push(["null", "Off"]);
+          parse = (v) => (v === "null" ? null : Number(v));
+        } else if (key === "maxRounds") {
+          options = [10, 15, 20, 30, 40, 60].map((n) => [String(n), `${n} rounds`]);
+          options.push(["null", "None"]);
           parse = (v) => (v === "null" ? null : Number(v));
         } else if (key === "luckyCards") {
           options = Object.entries(meta.options ?? {});

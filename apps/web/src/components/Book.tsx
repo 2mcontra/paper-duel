@@ -1,5 +1,7 @@
 interface Props {
   page: number | null;
+  /** The roll the page gives (last digit, 0 = 10). */
+  roll?: number | null;
   caption: string;
   /** Changing this replays the flip. Keep it stable to show the page without a flip. */
   flipKey?: string | number | undefined;
@@ -17,17 +19,18 @@ function passingPages(page: number): number[] {
  * lands with its last digit picked out. The page number is decided by the server before any
  * of this starts; the flip is only the reveal.
  */
-export function BookPage({ page, caption, flipKey, flipMs = 800 }: Props) {
+export function BookPage({ page, roll, caption, flipKey, flipMs = 800 }: Props) {
   if (page === null) {
     return (
-      <div className="book book--closed" aria-label="The book is closed">
-        <span className="book__hint">The book is closed</span>
+      <div className="book book--closed" aria-label="The book is closed" data-testid="book">
+        <span className="book__hint">{caption}</span>
       </div>
     );
   }
   const text = String(page);
   const digit = page % 10;
-  const odd = digit % 2 === 1;
+  const value = roll ?? (digit === 0 ? 10 : digit);
+  const big = value >= 7;
   // Leaves start at growing intervals so the flipping visibly slows towards the end.
   const starts = [0, 0.18, 0.4, 0.66].map((f) => Math.round(f * flipMs));
   const leafMs = Math.round(flipMs * 0.34);
@@ -52,10 +55,10 @@ export function BookPage({ page, caption, flipKey, flipMs = 800 }: Props) {
         <span className="book__who">{caption}</span>
         <span className="book__page" aria-label={`Page ${page}`}>
           {text.slice(0, -1)}
-          <mark className={odd ? "digit--odd" : "digit--even"}>{text.slice(-1)}</mark>
+          <mark className={big ? "digit--odd" : "digit--even"}>{text.slice(-1)}</mark>
         </span>
         <span className="book__banner">
-          {odd ? `Last digit ${digit}: slot ${digit}` : `Last digit ${digit}: even, no game`}
+          {digit === 0 ? `Last digit 0: roll 10!` : `Last digit ${digit}: roll ${value}`}
         </span>
       </div>
     </div>

@@ -15,7 +15,10 @@ export type Sound =
   | "out"
   | "win"
   | "lose"
-  | "pop";
+  | "pop"
+  | "step"
+  | "stomp"
+  | "yourturn";
 
 const MUTE_KEY = "paper-duel:muted";
 
@@ -167,6 +170,16 @@ export function play(sound: Sound): void {
       return;
     case "pop":
       tone(c, t, 0.08, 600, 900, 0.07);
+      return;
+    case "step": // a few pencil-tap footsteps
+      for (let i = 0; i < 3; i++) tone(c, t + i * 0.09, 0.05, 320, 260, 0.06, "triangle");
+      return;
+    case "stomp":
+      tone(c, t, 0.3, 120, 50, 0.3);
+      noise(c, t, 0.2, 400, 0.7, 0.2, "lowpass");
+      return;
+    case "yourturn":
+      [660, 880].forEach((f, i) => tone(c, t + i * 0.1, 0.18, f, f, 0.07, "triangle"));
       return;
   }
 }

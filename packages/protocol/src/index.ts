@@ -9,7 +9,7 @@ import {
 } from "@paper-duel/engine";
 
 /** Bump when a message shape changes incompatibly. */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 export const MAX_NAME_LENGTH = 20;
 export const ROOM_CODE_LENGTH = 5;
@@ -49,14 +49,12 @@ export const RoomCode = z
 export const RulesOverrides = z
   .object({
     firstPlayer: z.enum(["random", "host"]),
-    unarmedTarget: z.enum(["miss", "destroy_partial"]),
     bullets: z.enum(["consumed", "reusable"]),
-    ownDeadSlot: z.enum(["waste", "reroll"]),
     totalPages: z.number().int(),
-    roundTimerSeconds: z.number().int().nullable(),
-    lives: z.number().int(),
+    turnTimerSeconds: z.number().int().nullable(),
+    figures: z.number().int(),
     luckyCards: z.boolean(),
-    stalemate: z.enum(["most_alive", "draw"]),
+    maxRounds: z.number().int().nullable(),
   })
   .partial()
   .strict();
@@ -66,15 +64,24 @@ const Seat = z
   .int()
   .min(0)
   .max(MAX_PLAYERS - 1);
-const SlotNum = z.union([z.literal(1), z.literal(3), z.literal(5), z.literal(7), z.literal(9)]);
+const Fig = z.number().int().min(0).max(4);
+const Ref = z.object({ player: Seat, figure: Fig }).strict();
 export const MaxPlayers = z.number().int().min(MIN_PLAYERS).max(MAX_PLAYERS);
 
 export const CardPlaySchema = z.discriminatedUnion("card", [
-  z.object({ card: z.literal("shield"), slot: SlotNum }).strict(),
+  z.object({ card: z.literal("shield"), figure: Fig }).strict(),
   z.object({ card: z.literal("double_shot") }).strict(),
-  z.object({ card: z.literal("eraser"), target: Seat, slot: SlotNum }).strict(),
-  z.object({ card: z.literal("swap"), slots: z.tuple([SlotNum, SlotNum]) }).strict(),
-  z.object({ card: z.literal("steal"), target: Seat, slot: SlotNum }).strict(),
+  z.object({ card: z.literal("eraser"), target: Seat, targetFigure: Fig }).strict(),
+  z.object({ card: z.literal("swap"), figure: Fig, target: Seat, targetFigure: Fig }).strict(),
+  z.object({ card: z.literal("steal"), figure: Fig, target: Seat, targetFigure: Fig }).strict(),
+  z.object({ card: z.literal("reroll") }).strict(),
+]);
+
+export const MoveSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("draw"), figure: Fig }).strict(),
+  z.object({ kind: z.literal("move"), figure: Fig }).strict(),
+  z.object({ kind: z.literal("shoot"), figure: Fig, targets: z.array(Ref).min(1).max(2) }).strict(),
+  z.object({ kind: z.literal("pass") }).strict(),
 ]);
 
 const msg = <T extends string, S extends z.ZodRawShape>(type: T, shape: S) =>
@@ -93,10 +100,12 @@ export const ClientMessage = z.discriminatedUnion("type", [
   msg("ready", { ready: z.boolean() }),
   /** Host only: start once 2+ players are seated and all are ready. */
   msg("start", {}),
-  /** Queue (or with null, cancel) a card for this round. Before opening the book. */
-  msg("play_card", { play: CardPlaySchema.nullable() }),
+  /** Your turn: open the book (your roll is the page's last digit, 0 = 10). */
   msg("open_book", {}),
-  msg("set_target", { targets: z.array(Seat).min(1).max(2) }),
+  /** After opening the book and before acting, one per turn. */
+  msg("play_card", { play: CardPlaySchema }),
+  /** What you do with your roll; ends your turn. */
+  msg("act", { move: MoveSchema }),
   msg("emote", { emote: z.enum(EMOTES) }),
   msg("rematch", {}),
   msg("leave", {}),
@@ -120,6 +129,9 @@ export interface SeatView {
   left: boolean;
   /** Reconnect deadline (epoch ms) while disconnected. */
   graceDeadline: number | null;
+  /** Series score in this room: points (3/2/1 by place) and wins, over every game played here. */
+  points: number;
+  wins: number;
 }
 
 export interface RoomView {
@@ -160,11 +172,11 @@ export type ServerMessage =
   /**
    * Something happened: new events (redacted for you) and the updated game. To save bandwidth
    * `game.log` is empty here: append `events` to the log you already have. `auto` lists
-   * players the server acted for because the round timer ran out.
+   * players the server played for because their turn timer ran out.
    */
   | { type: "game_update"; events: GameEvent[]; game: GameView; auto: PlayerIndex[] }
-  /** Deadline for the current round (server epoch ms), or null when there is no timer. */
-  | { type: "round_timer"; round: number; deadline: number | null }
+  /** Deadline for the current turn (server epoch ms), or null when there is no timer. */
+  | { type: "turn_timer"; turn: number; deadline: number | null }
   | { type: "game_over"; winner: PlayerIndex | null; reason: GameView["endReason"]; game: GameView }
   | { type: "emote"; from: PlayerIndex; emote: Emote }
   /** You no longer hold a seat: you left, your session was resumed on another connection, or

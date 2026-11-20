@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { Board } from "./screens/Board.js";
 import { Landing } from "./screens/Landing.js";
 import { Lobby } from "./screens/Lobby.js";
-import { SketchFilter } from "./components/StickFigure.js";
+import { SketchFilter } from "./components/Sketch.js";
 import { connectGame, useGame } from "./store/game.js";
 
 export function App() {

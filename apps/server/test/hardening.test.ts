@@ -95,7 +95,7 @@ describe("idle rooms", () => {
 
   it("closes a finished game after 10 minutes without a rematch", async () => {
     server = await startServer({ messagesPerSecond: 10_000, messageBurst: 10_000 });
-    const { clients, views } = await startGame(server, 2, { lives: 1 });
+    const { clients, views } = await startGame(server, 2, { figures: 1 });
     clients.forEach((c, i) => autoplay(c, i, views[i]));
     for (const c of clients) await c.next("game_over", undefined, 10_000);
     server.clock.offset += 9 * 60_000;
@@ -122,9 +122,9 @@ describe("errors in timers", () => {
         return 2;
       },
     });
-    const { clients } = await startGame(server, 2, { roundTimerSeconds: 5 });
+    const { clients } = await startGame(server, 2, { turnTimerSeconds: 5 });
     await new Promise((r) => setTimeout(r, 150));
-    expect(errors).toContain("round timer");
+    expect(errors).toContain("turn timer");
     // The server is still up and the game can continue.
     clients[0]!.send({ type: "open_book" });
     await clients[0]!.next("game_update");

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isHidden, type GameEvent } from "@paper-duel/engine";
+import type { GameEvent } from "@paper-duel/engine";
 import { autoplay, room, startGame, startServer, type TestServer } from "./client.js";
 
 let server: TestServer;
@@ -38,11 +38,11 @@ describe("lobby", () => {
 
     clients[1]!.send({ type: "configure", maxPlayers: 4 });
     expect((await clients[1]!.next("error")).code).toBe("not_host");
-    clients[0]!.send({ type: "configure", rules: { lives: 9 } });
+    clients[0]!.send({ type: "configure", rules: { figures: 9 } });
     expect((await clients[0]!.next("error")).code).toBe("bad_rules");
-    clients[0]!.send({ type: "configure", maxPlayers: 4, rules: { lives: 2 } });
+    clients[0]!.send({ type: "configure", maxPlayers: 4, rules: { figures: 2 } });
     const s = await clients[1]!.next("room_state", (m) => m.room.maxPlayers === 4);
-    expect(s.room.rules.lives).toBe(2);
+    expect(s.room.rules.figures).toBe(2);
 
     third.send({ type: "join_room", code, name: "P2" });
     await third.next("joined", (m) => m.you === 2);
@@ -155,45 +155,34 @@ describe("message validation", () => {
   });
 });
 
-describe("rounds", () => {
-  it("everyone acts; goes stay hidden until the round resolves", async () => {
-    server.pages.push(137, 23, 42);
+describe("turns", () => {
+  it("one player at a time: open the book, then act", async () => {
+    server.pages.push(43);
     const { clients } = await startGame(server, 3);
     const [a, b, c] = clients as [
       NonNullable<(typeof clients)[0]>,
       NonNullable<(typeof clients)[0]>,
       NonNullable<(typeof clients)[0]>,
     ];
-    a.send({ type: "open_book" });
-    const mine = await a.next("game_update");
-    expect(mine.game.pending[0]).toMatchObject({ pages: [137], done: true });
-    const theirs = await b.next("game_update");
-    expect(theirs.events).toEqual([{ type: "PlayerReady", player: 0 }]);
-    expect(isHidden(theirs.game.pending[0]!)).toBe(true);
-    expect(theirs.game.players[0]!.slots[3]!.stage).toBe(0); // nothing resolved yet
-
-    a.send({ type: "open_book" });
-    expect((await a.next("error")).code).toBe("illegal_action");
-
+    await a.next("turn_timer", (m) => m.turn === 1);
     b.send({ type: "open_book" });
-    await b.next("game_update", (m) =>
-      m.events.some((e) => e.type === "PlayerReady" && e.player === 1),
-    );
-    c.send({ type: "open_book" });
-    const resolved = await c.next("game_update", (m) => m.game.round === 2);
-    expect(types(resolved.events)).toEqual([
-      "PlayerReady",
-      "BookOpened",
-      "PartDrawn",
-      "BookOpened",
-      "PartDrawn",
-      "BookOpened",
-      "TurnWasted",
-      "RoundStarted",
-    ]);
-    expect(resolved.game.players[0]!.slots[3]!.stage).toBe(1); // slot 7
-    expect(resolved.game.players[1]!.slots[1]!.stage).toBe(1); // slot 3
-    await a.next("round_timer", (m) => m.round === 2);
+    expect((await b.next("error")).message).toMatch(/not your turn/);
+    a.send({ type: "act", move: { kind: "pass" } });
+    expect((await a.next("error")).message).toMatch(/Open the book/);
+
+    a.send({ type: "open_book" });
+    const opened = await c.next("game_update");
+    expect(opened.events).toEqual([{ type: "BookOpened", player: 0, page: 43, roll: 3 }]);
+    expect(opened.game.turn).toMatchObject({ player: 0, roll: 3 });
+    a.send({ type: "open_book" });
+    expect((await a.next("error")).message).toMatch(/already opened/);
+
+    a.send({ type: "act", move: { kind: "draw", figure: 1 } });
+    const done = await b.next("game_update", (m) => m.game.turn.player === 1);
+    expect(types(done.events)).toEqual(["PartDrawn", "TurnStarted"]);
+    expect(done.game.players[0]!.figures[1]!.stage).toBe(3);
+    expect(done.game.log).toEqual([]); // updates carry only the new events
+    await b.next("turn_timer", (m) => m.turn === 2);
   });
 
   it("refuses game actions in the lobby", async () => {
@@ -202,65 +191,50 @@ describe("rounds", () => {
     expect((await clients[0]!.next("error")).code).toBe("wrong_phase");
   });
 
-  it("an armed roll asks for a target when there are several opponents", async () => {
-    // P0 builds slot 1 over five rounds while P1 and P2 roll even pages.
-    for (let i = 0; i < 5; i++) server.pages.push(10 * (i + 2) + 1, 2, 4);
-    server.pages.push(81, 6, 8);
-    const { clients } = await startGame(server, 3);
-    for (let round = 1; round <= 6; round++) {
-      for (const c of clients) c.send({ type: "open_book" });
-      if (round < 6) await clients[0]!.next("round_timer", (m) => m.round === round + 1);
-    }
-    const ask = await clients[0]!.next("game_update", (m) => {
-      const sub = m.game.pending[0];
-      return !!sub && !isHidden(sub) && sub.needsTarget;
-    });
-    expect(ask.game.round).toBe(6);
-    clients[0]!.send({ type: "set_target", targets: [0] });
-    expect((await clients[0]!.next("error")).code).toBe("illegal_action");
-    clients[0]!.send({ type: "set_target", targets: [2] });
-    const shot = await clients[1]!.next("game_update", (m) =>
-      m.events.some((e) => e.type === "ShotFired"),
-    );
-    expect(shot.events).toContainEqual({ type: "ShotFired", attacker: 0, targets: [2], slot: 1 });
-    expect(shot.events).toContainEqual({
-      type: "AttackMissed",
-      attacker: 0,
-      target: 2,
-      slot: 1,
-      reason: "target_unarmed",
-    });
-  });
-
-  it("playing a card you don't hold is refused", async () => {
+  it("illegal moves and cards you don't hold are refused", async () => {
     const { clients } = await startGame(server, 2);
-    clients[0]!.send({ type: "play_card", play: { card: "shield", slot: 1 } });
+    clients[0]!.send({ type: "open_book" });
+    await clients[0]!.next("game_update");
+    clients[0]!.send({ type: "play_card", play: { card: "shield", figure: 0 } });
+    expect((await clients[0]!.next("error")).code).toBe("illegal_action");
+    clients[0]!.send({ type: "act", move: { kind: "move", figure: 0 } });
+    expect((await clients[0]!.next("error")).message).toMatch(/face/);
+    clients[0]!.send({
+      type: "act",
+      move: { kind: "shoot", figure: 0, targets: [{ player: 1, figure: 0 }] },
+    });
     expect((await clients[0]!.next("error")).code).toBe("illegal_action");
   });
 
-  it("when the round timer runs out, the server acts for everyone not done", async () => {
-    const { clients } = await startGame(server, 3, { roundTimerSeconds: 5 }); // 5 * 10 ms in tests
-    const t = await clients[0]!.next("round_timer", (m) => m.round === 1);
+  it("when the turn timer runs out, the server plays the turn", async () => {
+    const { clients } = await startGame(server, 3, { turnTimerSeconds: 5 }); // 5 * 10 ms in tests
+    const t = await clients[1]!.next("turn_timer", (m) => m.turn === 1);
     expect(t.deadline).toBeTypeOf("number");
-    clients[1]!.send({ type: "open_book" });
-    const u = await clients[0]!.next("game_update", (m) => m.auto.length > 0);
-    expect(u.auto.sort()).toEqual([0, 2]);
-    expect(u.game.round).toBe(2);
+    const u = await clients[1]!.next("game_update", (m) => m.auto.length > 0);
+    expect(u.auto).toEqual([0]);
+    expect(u.events[0]).toMatchObject({ type: "BookOpened", player: 0 });
+    expect(u.game.turn.player).toBe(1);
   });
 
-  it("plays complete 3- and 6-player games to a single winner", async () => {
+  it("plays complete 3- and 6-player games to a full podium, and keeps the series score", async () => {
     await server.close();
     server = await startServer({ messagesPerSecond: 10_000, messageBurst: 10_000 });
     for (const count of [3, 6]) {
-      const { clients, views } = await startGame(server, count, { lives: 2 });
+      const { clients, views } = await startGame(server, count, { figures: 2 });
       clients.forEach((c, i) => autoplay(c, i, views[i]));
       const overs = await Promise.all(clients.map((c) => c.next("game_over", undefined, 20_000)));
-      const winner = overs[0]!.winner;
-      expect(overs.every((o) => o.winner === winner)).toBe(true);
-      expect(overs[0]!.reason).toBe("last_standing");
       const final = overs[0]!.game;
-      expect(final.players.filter((p) => !p.out)).toHaveLength(1);
-      expect(final.players[winner!]!.out).toBe(false);
+      expect(overs.every((o) => o.winner === overs[0]!.winner)).toBe(true);
+      const places = final.players.map((p) => p.place);
+      expect(places.every((p) => p !== null && p >= 1 && p <= count)).toBe(true);
+      if (final.winner !== null) expect(places[final.winner]).toBe(1);
+      const score = await clients[0]!.next("room_state", (m) => m.room.phase === "finished");
+      const points = score.room.seats.map((s) => s.points);
+      expect(points.reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+      if (final.winner !== null) {
+        expect(points[final.winner]).toBe(3);
+        expect(score.room.seats[final.winner]!.wins).toBe(1);
+      }
       const errors = clients.flatMap((c) => c.inbox.filter((m) => m.type === "error"));
       expect(errors).toEqual([]);
       for (const c of clients) {
@@ -270,18 +244,24 @@ describe("rounds", () => {
     }
   }, 30_000);
 
-  it("rematch starts a new game once everyone votes", async () => {
+  it("rematch starts a new game once everyone votes, and points add up", async () => {
     await server.close();
     server = await startServer({ messagesPerSecond: 10_000, messageBurst: 10_000 });
-    const { clients, game, views } = await startGame(server, 2, { lives: 1 });
+    const { clients, game, views } = await startGame(server, 2, { figures: 1 });
     clients.forEach((c, i) => autoplay(c, i, views[i]));
     for (const c of clients) await c.next("game_over", undefined, 10_000);
     clients[0]!.send({ type: "rematch" });
     await clients[1]!.next("room_state", (m) => m.room.seats[0]?.wantsRematch === true);
     clients[1]!.send({ type: "rematch" });
     const next = await clients[0]!.next("game_started", (m) => m.game.id !== game.id);
-    expect(next.game.rules.lives).toBe(1);
-  }, 15_000);
+    expect(next.game.rules.figures).toBe(1);
+    for (const c of clients) await c.next("game_over", (m) => m.game.id === next.game.id, 10_000);
+    const s = await clients[0]!.next(
+      "room_state",
+      (m) => m.room.phase === "finished" && m.room.seats.reduce((a, x) => a + x.points, 0) >= 6,
+    );
+    expect(s.room.seats.reduce((a, x) => a + x.wins, 0)).toBe(2);
+  }, 20_000);
 });
 
 describe("emotes", () => {
@@ -302,14 +282,25 @@ describe("leaving and reconnecting", () => {
     clients[2]!.send({ type: "leave" });
     expect((await clients[2]!.next("left")).reason).toBe("you_left");
     const u = await clients[0]!.next("game_update");
-    expect(u.events).toContainEqual({ type: "PlayerOut", player: 2, reason: "left", by: null });
+    expect(u.events).toContainEqual({
+      type: "PlayerOut",
+      player: 2,
+      reason: "left",
+      by: null,
+      place: 3,
+    });
     expect(u.game.phase).toBe("playing");
     const s = await clients[0]!.next("room_state", (m) => m.room.seats[2]?.left === true);
     expect(s.room.seats).toHaveLength(3);
-    // The round no longer waits for the player who left.
-    clients[0]!.send({ type: "open_book" });
-    clients[1]!.send({ type: "open_book" });
-    await clients[0]!.next("round_timer", (m) => m.round === 2);
+    // Turns skip the player who left.
+    for (const c of [clients[0]!, clients[1]!]) {
+      c.send({ type: "open_book" });
+      await c.next("game_update", (m) => m.game.turn.roll !== null);
+      c.send({ type: "act", move: { kind: "pass" } });
+      await c.next("game_update", (m) => m.events.some((e) => e.type === "Passed"));
+    }
+    const back = await clients[0]!.next("turn_timer", (m) => m.turn === 3);
+    expect(back.turn).toBe(3);
     await new Promise((r) => setTimeout(r, 50));
     expect(clients[2]!.has("game_update")).toBe(false);
   });
@@ -326,7 +317,7 @@ describe("leaving and reconnecting", () => {
   it("resumes within the grace period with your own view", async () => {
     server.pages.push(5);
     const { clients, tokens } = await startGame(server, 2);
-    clients[1]!.send({ type: "open_book" });
+    clients[0]!.send({ type: "open_book" });
     await clients[1]!.next("game_update");
     await clients[1]!.close();
     const down = await clients[0]!.next("room_state", (m) => m.room.seats[1]?.connected === false);
@@ -336,8 +327,10 @@ describe("leaving and reconnecting", () => {
     back.send({ type: "resume", sessionToken: tokens[1]! });
     expect((await back.next("joined")).you).toBe(1);
     const snap = await back.next("game_state");
-    expect(snap.game.pending[1]).toMatchObject({ pages: [5], done: true });
-    expect(isHidden(snap.game.pending[0]!)).toBe(true);
+    expect(snap.game.turn).toMatchObject({ player: 0, page: 5, roll: 5 });
+    expect(snap.game.players[0]!.hand).toBeNull();
+    expect(snap.game.players[1]!.hand).toEqual([]);
+    await back.next("turn_timer");
     await clients[0]!.next("room_state", (m) => m.room.seats[1]?.connected === true);
     await new Promise((r) => setTimeout(r, 300)); // past the grace period: not knocked out
     expect(clients[0]!.has("game_over")).toBe(false);
@@ -351,7 +344,13 @@ describe("leaving and reconnecting", () => {
       (m) => m.events.some((e) => e.type === "PlayerOut"),
       2000,
     );
-    expect(u.events).toContainEqual({ type: "PlayerOut", player: 2, reason: "left", by: null });
+    expect(u.events).toContainEqual({
+      type: "PlayerOut",
+      player: 2,
+      reason: "left",
+      by: null,
+      place: 3,
+    });
     const late = await server.connect();
     late.send({ type: "resume", sessionToken: tokens[2]! });
     expect((await late.next("error")).code).toBe("session_not_found");

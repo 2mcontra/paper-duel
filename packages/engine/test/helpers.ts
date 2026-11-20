@@ -1,16 +1,14 @@
 import {
   applyAction,
   createGame,
-  getSlot,
-  isLuckyPage,
   type Action,
   type ActionResult,
   type CardPlay,
+  type Figure,
   type GameState,
+  type Move,
   type PlayerIndex,
   type RulesConfig,
-  type SlotNumber,
-  type Stage,
 } from "../src/index.js";
 
 export function newGame(
@@ -22,25 +20,21 @@ export function newGame(
     id: "g1",
     players: Array.from({ length: players }, (_, i) => ({ id: `p${i}`, name: `P${i}` })),
     firstSeat,
-    rules: { roundTimerSeconds: null, ...rules },
+    rules: { turnTimerSeconds: null, ...rules },
   });
 }
 
-type SlotSpec = Partial<Record<SlotNumber, Stage | "dead" | "shield">>;
-
-/** A copy of `state` with slots set per player, for arranging positions. "shield" = armed + shielded. */
-export function arrange(state: GameState, ...specs: SlotSpec[]): GameState {
+/** A copy of `state` with some figures changed: figs[player][figure] = partial figure. */
+export function arrange(
+  state: GameState,
+  figs: Record<number, Record<number, Partial<Figure>>>,
+): GameState {
   const s = structuredClone(state);
-  specs.forEach((spec, i) => {
-    for (const [k, v] of Object.entries(spec)) {
-      const slot = getSlot(s.players[i]!, Number(k) as SlotNumber);
-      if (v === "dead") slot.status = "eliminated";
-      else if (v === "shield") {
-        slot.stage = 5;
-        slot.shielded = true;
-      } else slot.stage = v as Stage;
+  for (const [p, byFig] of Object.entries(figs)) {
+    for (const [f, patch] of Object.entries(byFig)) {
+      Object.assign(s.players[Number(p)]!.figures[Number(f)]!, patch);
     }
-  });
+  }
   return s;
 }
 
@@ -48,21 +42,16 @@ export function giveCards(
   state: GameState,
   p: PlayerIndex,
   ...cards: GameState["players"][0]["hand"]
-): GameState {
+) {
   const s = structuredClone(state);
   s.players[p]!.hand.push(...cards);
   return s;
 }
 
-/** A page whose last digit selects slot `n` (never a lucky page). */
-export function pageFor(n: SlotNumber, tens = 1): number {
-  let page = tens * 10 + n;
-  while (isLuckyPage(page)) page += 10;
-  return page;
+/** A page with this roll that is never lucky (10 means a page ending in 0). */
+export function pageFor(roll: number): number {
+  return roll === 10 ? 30 : roll === 4 ? 34 : 40 + roll;
 }
-export const EVEN_PAGE = 42;
-export const LUCKY_ODD = 111;
-export const LUCKY_EVEN = 200;
 
 export const open = (player: PlayerIndex, page: number, luck = 0): Action => ({
   type: "open_book",
@@ -70,18 +59,13 @@ export const open = (player: PlayerIndex, page: number, luck = 0): Action => ({
   page,
   luck,
 });
-export const aim = (player: PlayerIndex, ...targets: PlayerIndex[]): Action => ({
-  type: "set_target",
-  player,
-  targets,
-});
-export const card = (player: PlayerIndex, play: CardPlay | null): Action => ({
-  type: "play_card",
-  player,
-  play,
-});
+export const act = (player: PlayerIndex, move: Move): Action => ({ type: "act", player, move });
+export const card = (player: PlayerIndex, play: CardPlay, page?: number): Action =>
+  page === undefined
+    ? { type: "play_card", player, play }
+    : { type: "play_card", player, play, page, luck: 0 };
 
-/** Applies actions in order; returns the final result with all events concatenated. */
+/** Applies actions in order, returning the final state and all events. */
 export function run(state: GameState, ...actions: Action[]): ActionResult {
   let s = state;
   const events: ActionResult["events"] = [];
@@ -93,4 +77,8 @@ export function run(state: GameState, ...actions: Action[]): ActionResult {
   return { state: s, events };
 }
 
-export const slotOf = (s: GameState, p: PlayerIndex, n: SlotNumber) => getSlot(s.players[p]!, n);
+/** Opens the book with `roll` and makes `move`, for the player whose turn it is. */
+export function turn(state: GameState, roll: number, move: Move): ActionResult {
+  const p = state.turn.player;
+  return run(state, open(p, pageFor(roll)), act(p, move));
+}

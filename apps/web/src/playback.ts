@@ -1,112 +1,65 @@
 import type { GameEvent, GameView, Stage } from "@paper-duel/engine";
 
 /**
- * Round reveal: the server resolves a whole round at once and sends every event in one
- * update. To show it step by step, the client replays those events onto the board it was
- * showing before. At the end it switches to the server's state, so any gap here is
- * corrected rather than drifting.
+ * Turn playback: the server sends each action's events in one update. To show them step by
+ * step, the client replays those events onto the board it was showing before. At the end it
+ * switches to the server's state, so any gap here is corrected rather than drifting.
  */
 
 /** How long each event holds the stage before the next one, in ms. 0 = no pause. */
 export const STEP_MS: Partial<Record<GameEvent["type"], number>> = {
-  CardPlayed: 550,
-  CardFizzled: 400,
-  PartErased: 450,
-  BulletsStolen: 450,
-  SlotsSwapped: 400,
-  BookOpened: 520,
+  BookOpened: 650,
   CardDrawn: 500,
   HandFull: 300,
-  TurnWasted: 160,
-  RerollGranted: 250,
-  PartDrawn: 380,
-  ShotFired: 650,
-  SlotEliminated: 800,
-  ShotBlocked: 600,
-  FigureDestroyed: 600,
-  AttackMissed: 400,
-  GoLost: 400,
+  CardPlayed: 500,
+  ShieldRaised: 300,
+  PartErased: 450,
+  Swapped: 550,
+  BulletsStolen: 450,
+  PartDrawn: 420,
+  FigureMoved: 560,
+  Stomped: 750,
+  ShotFired: 600,
+  FigureKilled: 800,
+  ShieldBroken: 600,
+  Passed: 200,
   PlayerOut: 1000,
   GameOver: 400,
 };
 
-/** Events that only exist while players are choosing; they never need a reveal. */
-const QUIET = new Set<GameEvent["type"]>(["PlayerReady"]);
-
-/** Does this update contain anything worth revealing step by step? */
+/** Does this update contain anything worth playing back step by step? */
 export function needsReveal(events: GameEvent[]): boolean {
-  return events.some((e) => !QUIET.has(e.type) && (STEP_MS[e.type] ?? 0) > 0);
+  return events.some((e) => (STEP_MS[e.type] ?? 0) > 0);
 }
 
 /** Applies one event to a displayed game. Returns a new object; never mutates `view`. */
 export function applyEvent(view: GameView, e: GameEvent): GameView {
   const v: GameView = {
     ...view,
+    turn: { ...view.turn },
     players: view.players.map((p) => ({
       ...p,
       hand: p.hand ? p.hand.slice() : null,
-      slots: p.slots.map((s) => ({ ...s })),
+      figures: p.figures.map((f) => ({ ...f })),
     })),
     log: [...view.log, e],
   };
-  const slot = (player: number, n: number) => v.players[player]?.slots[(n - 1) / 2];
-  const setStage = (player: number, n: number, stage: Stage) => {
-    const s = slot(player, n);
-    if (s) s.stage = stage;
+  const fig = (p: number, f: number) => v.players[p]?.figures[f];
+  const set = (p: number, f: number, patch: Partial<GameView["players"][0]["figures"][0]>) => {
+    const x = fig(p, f);
+    if (x) Object.assign(x, patch);
   };
 
   switch (e.type) {
-    case "PartDrawn":
-      setStage(e.player, e.slot, e.stage);
+    case "TurnStarted":
+      v.round = e.round;
+      v.turnNumber = e.turn;
+      v.turn = { player: e.player, page: null, roll: null, cardPlayed: false, doubleShot: false };
       break;
-    case "PartErased":
-      setStage(e.target, e.slot, e.stage);
+    case "BookOpened":
+      v.turn.page = e.page;
+      v.turn.roll = e.roll;
       break;
-    case "ShieldRaised": {
-      const s = slot(e.player, e.slot);
-      if (s) s.shielded = true;
-      break;
-    }
-    case "SlotsSwapped": {
-      const a = slot(e.player, e.slots[0]);
-      const b = slot(e.player, e.slots[1]);
-      if (a && b) {
-        [a.stage, b.stage] = [b.stage, a.stage];
-        [a.shielded, b.shielded] = [b.shielded, a.shielded];
-      }
-      break;
-    }
-    case "BulletsStolen":
-      setStage(e.target, e.slot, 4);
-      if (e.loaded) setStage(e.player, e.slot, 5);
-      break;
-    case "BulletsSpent":
-      setStage(e.player, e.slot, 4);
-      break;
-    case "SlotEliminated": {
-      const s = slot(e.target, e.slot);
-      if (s) {
-        s.status = "eliminated";
-        s.shielded = false;
-      }
-      break;
-    }
-    case "ShotBlocked": {
-      const s = slot(e.target, e.slot);
-      if (s) s.shielded = false;
-      break;
-    }
-    case "FigureDestroyed":
-      setStage(e.target, e.slot, 0);
-      break;
-    case "PlayerOut": {
-      const p = v.players[e.player];
-      if (p) {
-        p.out = true;
-        for (const s of p.slots) s.shielded = false;
-      }
-      break;
-    }
     case "CardDrawn": {
       const p = v.players[e.player];
       if (p) {
@@ -122,10 +75,67 @@ export function applyEvent(view: GameView, e: GameEvent): GameView {
         const i = p.hand?.indexOf(e.play.card) ?? -1;
         if (p.hand && i >= 0) p.hand.splice(i, 1);
       }
+      v.turn.cardPlayed = true;
+      if (e.play.card === "double_shot") v.turn.doubleShot = true;
       break;
     }
-    case "RoundStarted":
-      v.round = e.round;
+    case "ShieldRaised":
+      set(e.player, e.figure, { shielded: true });
+      break;
+    case "PartErased":
+      set(e.target, e.figure, e.stage === 0 ? { stage: 0, pos: null } : { stage: e.stage });
+      break;
+    case "Swapped": {
+      const a = fig(e.player, e.figure);
+      const b = fig(e.target, e.targetFigure);
+      if (a && b) [a.pos, b.pos] = [b.pos, a.pos];
+      break;
+    }
+    case "BulletsStolen":
+      set(e.target, e.targetFigure, { stage: 4 });
+      set(e.player, e.figure, { stage: 5 });
+      break;
+    case "PartDrawn":
+      set(e.player, e.figure, { stage: e.stage });
+      break;
+    case "FigureMoved":
+      set(e.player, e.figure, { pos: e.to });
+      break;
+    case "Stomped":
+      set(e.target, e.targetFigure, { pos: null, stage: e.stage as Stage });
+      break;
+    case "FigureKilled":
+      set(e.target, e.targetFigure, { dead: true, pos: null, shielded: false });
+      break;
+    case "ShieldBroken":
+      set(e.target, e.targetFigure, { shielded: false });
+      break;
+    case "BulletsSpent":
+      set(e.player, e.figure, { stage: 4 });
+      break;
+    case "PlayerOut": {
+      const p = v.players[e.player];
+      if (p) {
+        p.out = true;
+        p.place = e.place;
+        p.handSize = 0;
+        if (p.hand) p.hand = [];
+        for (const f of p.figures) {
+          f.pos = null;
+          f.shielded = false;
+          if (e.reason === "left") f.dead = true;
+        }
+      }
+      break;
+    }
+    case "GameOver":
+      v.phase = "finished";
+      v.winner = e.winner;
+      v.endReason = e.reason;
+      e.places.forEach((place, i) => {
+        const p = v.players[i];
+        if (p) p.place = place;
+      });
       break;
     default:
       break;

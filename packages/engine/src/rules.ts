@@ -2,14 +2,12 @@ import type { RulesConfig } from "./types.js";
 
 export const DEFAULT_RULES: Readonly<RulesConfig> = Object.freeze({
   firstPlayer: "random",
-  unarmedTarget: "miss",
   bullets: "consumed",
-  ownDeadSlot: "waste",
   totalPages: 300,
-  roundTimerSeconds: 20,
-  lives: 3,
+  turnTimerSeconds: 20,
+  figures: 3,
   luckyCards: true,
-  stalemate: "most_alive",
+  maxRounds: 40,
 });
 
 export class RulesError extends Error {
@@ -18,15 +16,15 @@ export class RulesError extends Error {
 
 const ENUMS: { [K in keyof RulesConfig]?: readonly RulesConfig[K][] } = {
   firstPlayer: ["random", "host"],
-  unarmedTarget: ["miss", "destroy_partial"],
   bullets: ["consumed", "reusable"],
-  ownDeadSlot: ["waste", "reroll"],
   luckyCards: [true, false],
-  stalemate: ["most_alive", "draw"],
 };
 
 /** Partial rules; undefined values are ignored (so parsed JSON can be passed straight in). */
 export type RulesOverrides = { [K in keyof RulesConfig]?: RulesConfig[K] | undefined };
+
+const intIn = (v: unknown, min: number, max: number) =>
+  Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
 
 /** Merges overrides onto the defaults and validates the result. Throws RulesError. */
 export function resolveRules(overrides: RulesOverrides = {}): RulesConfig {
@@ -39,23 +37,16 @@ export function resolveRules(overrides: RulesOverrides = {}): RulesConfig {
       throw new RulesError(`Invalid ${key}: ${String(rules[key])}`);
     }
   }
-  const { totalPages, roundTimerSeconds, lives } = rules;
-  if (
-    !Number.isInteger(totalPages) ||
-    totalPages < 10 ||
-    totalPages > 10_000 ||
-    totalPages % 10 !== 0
-  ) {
+  const { totalPages, turnTimerSeconds, figures, maxRounds } = rules;
+  if (!intIn(totalPages, 10, 10_000) || totalPages % 10 !== 0) {
     throw new RulesError(`totalPages must be a multiple of 10 from 10 to 10000, got ${totalPages}`);
   }
-  if (!Number.isInteger(lives) || lives < 1 || lives > 5) {
-    throw new RulesError(`lives must be 1..5, got ${lives}`);
+  if (!intIn(figures, 1, 5)) throw new RulesError(`figures must be 1..5, got ${figures}`);
+  if (turnTimerSeconds !== null && !intIn(turnTimerSeconds, 5, 600)) {
+    throw new RulesError(`turnTimerSeconds must be null or 5..600, got ${turnTimerSeconds}`);
   }
-  if (
-    roundTimerSeconds !== null &&
-    (!Number.isInteger(roundTimerSeconds) || roundTimerSeconds < 5 || roundTimerSeconds > 600)
-  ) {
-    throw new RulesError(`roundTimerSeconds must be null or 5..600, got ${roundTimerSeconds}`);
+  if (maxRounds !== null && !intIn(maxRounds, 1, 1000)) {
+    throw new RulesError(`maxRounds must be null or 1..1000, got ${maxRounds}`);
   }
   return rules;
 }

@@ -1,45 +1,43 @@
-import { resolveRules, type RulesOverrides } from "./rules.js";
+import { DEFAULT_RULES, resolveRules, type RulesOverrides } from "./rules.js";
 import {
-  ARMED,
+  CAN_WALK,
+  START_STAGE,
   CARDS,
   HAND_LIMIT,
   HAS_GUN,
-  MAX_PLAYERS,
-  MIN_PLAYERS,
+  LOADED,
   PARTS,
-  SLOT_NUMBERS,
+  SQUARES_PER_SEAT,
+  STAR_EVERY,
   type Action,
   type ActionResult,
   type Card,
   type CardPlay,
-  type EndReason,
+  type Figure,
+  type FigureIndex,
+  type FigureRef,
   type GameEvent,
   type GameState,
+  type Move,
   type PlayerIndex,
   type PlayerState,
-  type Slot,
-  type SlotNumber,
+  type PlayerStats,
   type Stage,
-  type Submission,
 } from "./types.js";
 
 export class EngineError extends Error {
   override name = "EngineError";
 }
 
-// ---------- small helpers ----------
+// ---------- pure helpers (shared with the client) ----------
 
-export function isSlotNumber(n: number): n is SlotNumber {
-  return (SLOT_NUMBERS as readonly number[]).includes(n);
+/** The roll a page gives: its last digit, with 0 counting as 10. */
+export function rollForPage(page: number): number {
+  const d = page % 10;
+  return d === 0 ? 10 : d;
 }
 
-/** The slot a page selects, or null when its last digit is even. */
-export function slotForPage(page: number): SlotNumber | null {
-  const digit = page % 10;
-  return isSlotNumber(digit) ? digit : null;
-}
-
-/** 100, 200, 300 ... and repeated-digit pages (11, 22, ..., 99, 111, 222, ...). */
+/** 100, 200, 300... and repeated-digit pages (11, 22, ..., 111, 222) give a card. */
 export function isLuckyPage(page: number): boolean {
   if (page % 100 === 0) return true;
   const s = String(page);
@@ -50,503 +48,580 @@ export function cardForLuck(luck: number): Card {
   return CARDS[Math.abs(Math.trunc(luck)) % CARDS.length]!;
 }
 
-export function getSlot(player: PlayerState, n: SlotNumber): Slot {
-  const slot = player.slots[(n - 1) / 2];
-  if (!slot || slot.number !== n) throw new EngineError(`Slot ${n} missing`);
-  return slot;
+export function startSquare(p: PlayerIndex): number {
+  return p * SQUARES_PER_SEAT;
 }
 
-export function aliveCount(player: PlayerState): number {
-  return player.slots.filter((s) => s.status === "alive").length;
+export function isStar(square: number): boolean {
+  return square % STAR_EVERY === 0;
 }
 
-export function lostCount(player: PlayerState): number {
-  return player.slots.length - aliveCount(player);
+/** Steps between two squares on the loop, the short way round. */
+export function distance(trackLength: number, a: number, b: number): number {
+  const d = Math.abs(a - b) % trackLength;
+  return Math.min(d, trackLength - d);
 }
 
-export function activePlayers(state: GameState): PlayerIndex[] {
-  return state.players.flatMap((p, i) => (p.out ? [] : [i]));
+/** Minimal shape the helpers below read, so the client can pass its views too. */
+interface BoardLike {
+  trackLength: number;
+  players: readonly { figures: readonly Figure[]; out: boolean }[];
 }
 
-/** Opponents still in the game. */
-export function opponentsOf(state: GameState, p: PlayerIndex): PlayerIndex[] {
-  return activePlayers(state).filter((i) => i !== p);
+export const figuresLeft = (p: { figures: readonly { dead: boolean }[] }) =>
+  p.figures.filter((f) => !f.dead).length;
+
+/** Where a figure stands for range purposes: its square, or its home's start square. */
+export function rangeSquare(game: BoardLike, ref: FigureRef): number {
+  return game.players[ref.player]!.figures[ref.figure]!.pos ?? startSquare(ref.player);
 }
 
-/** This round's resolve order: active players, starting one seat later each round. */
-export function roundOrder(state: GameState): PlayerIndex[] {
-  const n = state.players.length;
-  const start = (state.firstSeat + state.round - 1) % n;
-  const order: PlayerIndex[] = [];
-  for (let k = 0; k < n; k++) {
-    const i = (start + k) % n;
-    if (!state.players[i]!.out) order.push(i);
+/** Can this figure be shot or stomped right now? Stars protect figures standing on them. */
+export function isExposed(game: BoardLike, ref: FigureRef): boolean {
+  const owner = game.players[ref.player];
+  const f = owner?.figures[ref.figure];
+  if (!owner || !f || owner.out || f.dead || f.stage === 0) return false;
+  return f.pos === null || !isStar(f.pos);
+}
+
+/** Square a figure would land on after walking `roll` squares. */
+export function destination(
+  game: BoardLike,
+  player: PlayerIndex,
+  figure: FigureIndex,
+  roll: number,
+): number {
+  const f = game.players[player]!.figures[figure]!;
+  const from = f.pos ?? startSquare(player) - 1;
+  return (((from + roll) % game.trackLength) + game.trackLength) % game.trackLength;
+}
+
+/** Can this figure shoot (loaded, on the track, not on a star)? */
+export function canShoot(f: Figure): boolean {
+  return !f.dead && f.stage === LOADED && f.pos !== null && !isStar(f.pos);
+}
+
+/** Enemy figures this figure could shoot with this roll. */
+export function shootTargets(
+  game: BoardLike,
+  player: PlayerIndex,
+  figure: FigureIndex,
+  roll: number,
+): FigureRef[] {
+  const f = game.players[player]?.figures[figure];
+  if (!f || !canShoot(f)) return [];
+  const out: FigureRef[] = [];
+  game.players.forEach((p, t) => {
+    if (t === player || p.out) return;
+    p.figures.forEach((_, i) => {
+      const ref = { player: t, figure: i };
+      if (!isExposed(game, ref)) return;
+      if (distance(game.trackLength, f.pos!, rangeSquare(game, ref)) <= roll) out.push(ref);
+    });
+  });
+  return out;
+}
+
+/** Enemy figures standing on a square (that a figure landing there would stomp). */
+export function stompVictims(game: BoardLike, player: PlayerIndex, square: number): FigureRef[] {
+  if (isStar(square)) return [];
+  const out: FigureRef[] = [];
+  game.players.forEach((p, t) => {
+    if (t === player || p.out) return;
+    p.figures.forEach((f, i) => {
+      if (!f.dead && f.pos === square) out.push({ player: t, figure: i });
+    });
+  });
+  return out;
+}
+
+/** A game or a player's view of one: what the move helpers read. */
+export interface TurnBoard extends BoardLike {
+  phase: GameState["phase"];
+  turn: GameState["turn"];
+  players: readonly { figures: readonly Figure[]; out: boolean; hand: readonly Card[] | null }[];
+}
+
+/** Every legal move for the current player (shots with one target each). */
+export function legalMoves(game: TurnBoard, player: PlayerIndex): Move[] {
+  const roll = game.turn.roll;
+  if (game.phase !== "playing" || game.turn.player !== player || roll === null) return [];
+  const me = game.players[player]!;
+  const moves: Move[] = [];
+  me.figures.forEach((f, i) => {
+    if (f.dead) return;
+    for (const t of shootTargets(game, player, i, roll)) {
+      moves.push({ kind: "shoot", figure: i, targets: [t] });
+    }
+    if (f.stage >= CAN_WALK) moves.push({ kind: "move", figure: i });
+    if (f.stage < LOADED) moves.push({ kind: "draw", figure: i });
+  });
+  moves.push({ kind: "pass" });
+  return moves;
+}
+
+/** Every card play the current player may make now (reroll included). */
+export function legalCardPlays(game: TurnBoard, player: PlayerIndex): CardPlay[] {
+  const { turn } = game;
+  const roll = turn.roll;
+  if (game.phase !== "playing" || turn.player !== player || roll === null || turn.cardPlayed) {
+    return [];
   }
-  return order;
+  const me = game.players[player]!;
+  const plays: CardPlay[] = [];
+  const enemies: (FigureRef & { f: Figure })[] = [];
+  game.players.forEach((p, t) => {
+    if (t === player || p.out) return;
+    p.figures.forEach((f, i) => {
+      if (!f.dead) enemies.push({ player: t, figure: i, f });
+    });
+  });
+  for (const card of new Set(me.hand ?? [])) {
+    switch (card) {
+      case "shield":
+        me.figures.forEach((f, i) => {
+          if (!f.dead && f.stage > 0 && !f.shielded) plays.push({ card, figure: i });
+        });
+        break;
+      case "double_shot":
+        if (me.figures.some((_, i) => shootTargets(game, player, i, roll).length >= 2)) {
+          plays.push({ card });
+        }
+        break;
+      case "eraser":
+        for (const e of enemies) {
+          if (e.f.stage > 0) plays.push({ card, target: e.player, targetFigure: e.figure });
+        }
+        break;
+      case "swap":
+        me.figures.forEach((f, i) => {
+          if (f.dead || f.pos === null) return;
+          for (const e of enemies) {
+            if (e.f.pos !== null) {
+              plays.push({ card, figure: i, target: e.player, targetFigure: e.figure });
+            }
+          }
+        });
+        break;
+      case "steal":
+        me.figures.forEach((f, i) => {
+          if (f.dead || f.stage !== HAS_GUN) return;
+          for (const e of enemies) {
+            if (e.f.stage === LOADED) {
+              plays.push({ card, figure: i, target: e.player, targetFigure: e.figure });
+            }
+          }
+        });
+        break;
+      case "reroll":
+        plays.push({ card });
+        break;
+    }
+  }
+  return plays;
 }
 
-/**
- * Best targets for player `p` firing slot `n`: opponents whose slot n has an unshielded gun
- * first, then any living figure there, then the rest; ties go to the next seat round the table.
- * Used for automatic targets (timeouts, bots) and as the UI's suggestion.
- */
-export function suggestTargets(
-  state: GameState,
-  p: PlayerIndex,
-  n: SlotNumber,
-  count = 1,
-): PlayerIndex[] {
-  const seats = state.players.length;
-  const score = (t: PlayerIndex) => {
-    const s = getSlot(state.players[t]!, n);
-    if (s.status !== "alive") return 3;
-    if (s.stage >= HAS_GUN && !s.shielded) return 0;
-    if (s.stage >= HAS_GUN) return 1;
-    return 2;
-  };
-  return opponentsOf(state, p)
-    .sort((a, b) => score(a) - score(b) || ((a - p + seats) % seats) - ((b - p + seats) % seats))
-    .slice(0, count);
-}
-
-function emptySubmission(): Submission {
-  return { pages: [], draws: [], targets: [], needsTarget: false, card: null, done: false };
-}
+const sameJson = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
 // ---------- game setup ----------
 
-export interface NewGameOptions {
+const emptyStats = (): PlayerStats => ({
+  kills: 0,
+  stomps: 0,
+  parts: 0,
+  shots: 0,
+  cardsPlayed: 0,
+  deaths: 0,
+  rollTotal: 0,
+  rolls: 0,
+  squares: 0,
+});
+
+export interface NewGame {
   id: string;
   players: { id: string; name: string }[];
-  /** Seat first in the round-1 order. The caller (server) resolves R2 and passes the result. */
   firstSeat: PlayerIndex;
   rules?: RulesOverrides;
 }
 
-export function createGame(opts: NewGameOptions): GameState {
-  const count = opts.players.length;
-  if (count < MIN_PLAYERS || count > MAX_PLAYERS) {
-    throw new EngineError(`A game needs ${MIN_PLAYERS} to ${MAX_PLAYERS} players, got ${count}`);
+export function createGame({ id, players, firstSeat, rules }: NewGame): GameState {
+  if (players.length < 2 || players.length > 6) {
+    throw new EngineError(`A game needs 2 to 6 players, got ${players.length}`);
   }
-  if (!Number.isInteger(opts.firstSeat) || opts.firstSeat < 0 || opts.firstSeat >= count) {
-    throw new EngineError(`firstSeat ${opts.firstSeat} is not a seat`);
+  if (!Number.isInteger(firstSeat) || firstSeat < 0 || firstSeat >= players.length) {
+    throw new EngineError(`Bad first seat ${firstSeat}`);
   }
-  const players: PlayerState[] = opts.players.map((p) => ({
-    id: p.id,
-    name: p.name,
-    out: false,
-    hand: [],
-    slots: SLOT_NUMBERS.map((number) => ({
-      number,
-      stage: 0 as Stage,
-      status: "alive" as const,
-      shielded: false,
-    })),
-  }));
+  const resolved = resolveRules({ ...DEFAULT_RULES, ...rules });
   const state: GameState = {
-    id: opts.id,
+    id,
     phase: "playing",
-    players,
+    players: players.map((p): PlayerState => ({
+      id: p.id,
+      name: p.name,
+      figures: Array.from({ length: resolved.figures }, () => ({
+        stage: START_STAGE,
+        pos: null,
+        dead: false,
+        shielded: false,
+      })),
+      hand: [],
+      out: false,
+      place: null,
+      stats: emptyStats(),
+    })),
+    trackLength: players.length * SQUARES_PER_SEAT,
     round: 1,
-    firstSeat: opts.firstSeat,
-    pending: players.map(() => emptySubmission()),
+    turnNumber: 1,
+    firstSeat,
+    turn: { player: firstSeat, page: null, roll: null, cardPlayed: false, doubleShot: false },
     log: [],
     history: [],
     winner: null,
     endReason: null,
-    rules: resolveRules(opts.rules),
+    rules: resolved,
   };
-  state.log.push({ type: "RoundStarted", round: 1, order: roundOrder(state) });
+  state.log.push({ type: "TurnStarted", player: firstSeat, round: 1, turn: 1 });
   return state;
 }
 
-// ---------- drafts (copy-on-write) ----------
+// ---------- actions ----------
 
-interface Draft {
-  s: GameState;
-  events: GameEvent[];
-}
-
-function begin(state: GameState, action: Action): Draft {
-  return {
-    s: {
-      ...state,
-      players: state.players.map((p) => ({
-        ...p,
-        hand: p.hand.slice(),
-        slots: p.slots.map((sl) => ({ ...sl })),
-      })),
-      pending: state.pending.map((sub) =>
-        sub
-          ? {
-              ...sub,
-              pages: sub.pages.slice(),
-              draws: sub.draws.slice(),
-              targets: sub.targets.slice(),
-            }
-          : null,
-      ),
-      log: state.log.slice(),
-      history: [...state.history, action],
-    },
-    events: [],
+export function applyAction(prev: GameState, action: Action): ActionResult {
+  if (prev.phase !== "playing") throw new EngineError("The game is over");
+  // Events and actions are never mutated, so the (long) log and history are copied shallowly.
+  const { log, history, ...rest } = prev;
+  const state: GameState = { ...structuredClone(rest), log: log.slice(), history: history.slice() };
+  const events: GameEvent[] = [];
+  const emit = (e: GameEvent) => {
+    events.push(e);
+    state.log.push(e);
   };
-}
+  const player = state.players[action.player];
+  if (!player) throw new EngineError(`No player ${action.player}`);
 
-function emit(d: Draft, e: GameEvent): void {
-  d.events.push(e);
-  d.s.log.push(e);
-}
+  if (action.type === "leave") {
+    if (player.out) throw new EngineError("That player is already out");
+    knockOut(state, action.player, "left", null, emit);
+    if (state.phase === "playing" && state.turn.player === action.player) endTurn(state, emit);
+    state.history.push(action);
+    return { state, events };
+  }
 
-// ---------- the reducer ----------
+  if (player.out) throw new EngineError("You are out of the game");
+  if (state.turn.player !== action.player) throw new EngineError("It's not your turn");
+  const turn = state.turn;
 
-/** Validates and applies one action. Never mutates `state`. Throws EngineError if illegal. */
-export function applyAction(state: GameState, action: Action): ActionResult {
-  if (state.phase !== "playing") throw new EngineError("The game is over");
-  const p = action.player;
-  const player = state.players[p];
-  if (!player) throw new EngineError(`No player ${p}`);
-  if (player.out) throw new EngineError("You are out of this game");
-
-  const d = begin(state, action);
   switch (action.type) {
-    case "leave":
-      leave(d, p);
+    case "open_book": {
+      if (turn.roll !== null) throw new EngineError("You already opened the book this turn");
+      openBook(state, action.player, action.page, action.luck, emit);
       break;
-    case "play_card":
-      playCard(d, p, action.play);
+    }
+    case "play_card": {
+      if (turn.roll === null) throw new EngineError("Open the book before playing a card");
+      if (turn.cardPlayed) throw new EngineError("Only one card per turn");
+      if (!player.hand.includes(action.play.card))
+        throw new EngineError("You don't hold that card");
+      if (!legalCardPlays(state, action.player).some((p) => sameJson(p, action.play))) {
+        throw new EngineError("That card can't be played like that now");
+      }
+      if (action.play.card === "reroll" && action.page === undefined) {
+        throw new EngineError("A reroll needs a new page");
+      }
+      player.hand.splice(player.hand.indexOf(action.play.card), 1);
+      turn.cardPlayed = true;
+      player.stats.cardsPlayed++;
+      emit({ type: "CardPlayed", player: action.player, play: action.play });
+      playCard(state, action.player, action.play, action, emit);
       break;
-    case "open_book":
-      openBook(d, p, action.page, action.luck);
+    }
+    case "act": {
+      if (turn.roll === null) throw new EngineError("Open the book first");
+      doMove(state, action.player, action.move, emit);
+      if (state.phase === "playing") endTurn(state, emit);
       break;
-    case "set_target":
-      setTarget(d, p, action.targets);
-      break;
+    }
   }
-  if (d.s.phase === "playing" && roundComplete(d.s)) resolveRound(d);
-  return { state: d.s, events: d.events };
+  state.history.push(action);
+  return { state, events };
 }
 
-function mySubmission(d: Draft, p: PlayerIndex): Submission {
-  const sub = d.s.pending[p];
-  if (!sub) throw new EngineError("You are out of this game");
-  return sub;
-}
+type Emit = (e: GameEvent) => void;
 
-function playCard(d: Draft, p: PlayerIndex, play: CardPlay | null): void {
-  const sub = mySubmission(d, p);
-  if (sub.pages.length > 0) throw new EngineError("Play cards before opening the book");
-  if (play === null) {
-    sub.card = null;
-    return;
+function openBook(state: GameState, p: PlayerIndex, page: number, luck: number, emit: Emit) {
+  const { totalPages, luckyCards } = state.rules;
+  if (!Number.isInteger(page) || page < 1 || page > totalPages) {
+    throw new EngineError(`Page ${page} is not in the book`);
   }
-  if (!d.s.players[p]!.hand.includes(play.card))
-    throw new EngineError(`You have no ${play.card} card`);
-  validateCardTargets(d.s, p, play);
-  sub.card = play;
+  const roll = rollForPage(page);
+  const player = state.players[p]!;
+  state.turn.page = page;
+  state.turn.roll = roll;
+  player.stats.rolls++;
+  player.stats.rollTotal += roll;
+  emit({ type: "BookOpened", player: p, page, roll });
+  if (luckyCards && isLuckyPage(page)) {
+    if (player.hand.length >= HAND_LIMIT) {
+      emit({ type: "HandFull", player: p });
+    } else {
+      const card = cardForLuck(luck);
+      player.hand.push(card);
+      emit({ type: "CardDrawn", player: p, card });
+    }
+  }
 }
 
-/** Throws if a card play can't make sense right now (wrong slot, target out, ...). */
-function validateCardTargets(s: GameState, p: PlayerIndex, play: CardPlay): void {
-  const me = s.players[p]!;
-  const opponent = (t: PlayerIndex) => {
-    if (t === p || !s.players[t] || s.players[t]!.out)
-      throw new EngineError("Pick an opponent who is still in");
-    return s.players[t]!;
-  };
+function playCard(
+  state: GameState,
+  p: PlayerIndex,
+  play: CardPlay,
+  action: Extract<Action, { type: "play_card" }>,
+  emit: Emit,
+) {
+  const me = state.players[p]!;
   switch (play.card) {
     case "shield":
-      if (getSlot(me, play.slot).status !== "alive") throw new EngineError("That slot is dead");
+      me.figures[play.figure]!.shielded = true;
+      emit({ type: "ShieldRaised", player: p, figure: play.figure });
       return;
     case "double_shot":
-      if (opponentsOf(s, p).length < 2) throw new EngineError("Double shot needs two opponents");
+      state.turn.doubleShot = true;
       return;
     case "eraser": {
-      const sl = getSlot(opponent(play.target), play.slot);
-      if (sl.status !== "alive" || sl.stage === 0) throw new EngineError("Nothing to erase there");
-      return;
-    }
-    case "swap": {
-      const [a, b] = play.slots;
-      if (a === b) throw new EngineError("Pick two different slots");
-      if (getSlot(me, a).status !== "alive" || getSlot(me, b).status !== "alive") {
-        throw new EngineError("Both slots must be alive");
-      }
-      return;
-    }
-    case "steal": {
-      const sl = getSlot(opponent(play.target), play.slot);
-      if (sl.status !== "alive" || sl.stage !== ARMED)
-        throw new EngineError("That figure has no bullets");
-      return;
-    }
-  }
-}
-
-function openBook(d: Draft, p: PlayerIndex, page: number, luck: number): void {
-  const s = d.s;
-  if (!Number.isInteger(page) || page < 1 || page > s.rules.totalPages) {
-    throw new EngineError(`Page ${page} is outside 1..${s.rules.totalPages}`);
-  }
-  if (!Number.isInteger(luck) || luck < 0)
-    throw new EngineError("luck must be a non-negative integer");
-  const sub = mySubmission(d, p);
-  if (sub.done || sub.needsTarget) throw new EngineError("You already opened the book this round");
-
-  sub.pages.push(page);
-  sub.draws.push(s.rules.luckyCards && isLuckyPage(page) ? cardForLuck(luck) : null);
-
-  const n = slotForPage(page);
-  if (n === null) return finishGo(d, p);
-  const slot = getSlot(s.players[p]!, n);
-  if (slot.status === "eliminated") {
-    // R6 reroll: leave the go open so the player can open the book again.
-    if (s.rules.ownDeadSlot === "reroll") return;
-    return finishGo(d, p);
-  }
-  if (slot.stage < ARMED) return finishGo(d, p);
-
-  const opponents = opponentsOf(s, p);
-  const wanted = sub.card?.card === "double_shot" ? Math.min(2, opponents.length) : 1;
-  if (opponents.length <= wanted) {
-    sub.targets = opponents.slice(0, wanted);
-    return finishGo(d, p);
-  }
-  sub.needsTarget = true;
-}
-
-function setTarget(d: Draft, p: PlayerIndex, targets: PlayerIndex[]): void {
-  const sub = mySubmission(d, p);
-  if (!sub.needsTarget) throw new EngineError("You have nothing to aim right now");
-  const opponents = opponentsOf(d.s, p);
-  const wanted = sub.card?.card === "double_shot" ? Math.min(2, opponents.length) : 1;
-  if (targets.length !== wanted)
-    throw new EngineError(`Pick ${wanted} target${wanted > 1 ? "s" : ""}`);
-  if (new Set(targets).size !== targets.length) throw new EngineError("Pick different targets");
-  if (!targets.every((t) => opponents.includes(t)))
-    throw new EngineError("Pick opponents who are still in");
-  sub.targets = targets.slice();
-  sub.needsTarget = false;
-  finishGo(d, p);
-}
-
-function finishGo(d: Draft, p: PlayerIndex): void {
-  mySubmission(d, p).done = true;
-  emit(d, { type: "PlayerReady", player: p });
-}
-
-function leave(d: Draft, p: PlayerIndex): void {
-  knockOut(d, p, "left", null);
-  checkLastStanding(d);
-}
-
-function roundComplete(s: GameState): boolean {
-  return s.pending.every((sub, i) => s.players[i]!.out || sub?.done === true);
-}
-
-// ---------- resolving a round ----------
-
-function resolveRound(d: Draft): void {
-  const s = d.s;
-  for (const p of roundOrder(s)) {
-    if (s.phase !== "playing") return;
-    if (s.players[p]!.out) {
-      emit(d, { type: "GoLost", player: p });
-      continue;
-    }
-    const sub = s.pending[p]!;
-    if (sub.card) resolveCard(d, p, sub.card);
-    resolvePages(d, p, sub);
-  }
-  if (s.phase !== "playing") return;
-  if (checkStalemate(d)) return;
-
-  s.round += 1;
-  s.pending = s.players.map((pl) => (pl.out ? null : emptySubmission()));
-  emit(d, { type: "RoundStarted", round: s.round, order: roundOrder(s) });
-}
-
-function resolveCard(d: Draft, p: PlayerIndex, play: CardPlay): void {
-  if (play.card === "double_shot") return; // used (or kept) when the shot is fired
-  const s = d.s;
-  const me = s.players[p]!;
-  try {
-    validateCardTargets(s, p, play);
-  } catch {
-    emit(d, { type: "CardFizzled", player: p, card: play.card });
-    return;
-  }
-  me.hand.splice(me.hand.indexOf(play.card), 1);
-  emit(d, { type: "CardPlayed", player: p, play });
-  switch (play.card) {
-    case "shield":
-      getSlot(me, play.slot).shielded = true;
-      emit(d, { type: "ShieldRaised", player: p, slot: play.slot });
-      return;
-    case "eraser": {
-      const sl = getSlot(s.players[play.target]!, play.slot);
-      sl.stage = (sl.stage - 1) as Stage;
-      emit(d, {
+      const f = state.players[play.target]!.figures[play.targetFigure]!;
+      f.stage = (f.stage - 1) as Stage;
+      if (f.stage === 0) f.pos = null; // nothing left on the track: back home
+      emit({
         type: "PartErased",
         player: p,
         target: play.target,
-        slot: play.slot,
-        stage: sl.stage,
+        figure: play.targetFigure,
+        stage: f.stage,
       });
       return;
     }
     case "swap": {
-      const a = getSlot(me, play.slots[0]);
-      const b = getSlot(me, play.slots[1]);
-      [a.stage, b.stage] = [b.stage, a.stage];
-      [a.shielded, b.shielded] = [b.shielded, a.shielded];
-      emit(d, { type: "SlotsSwapped", player: p, slots: play.slots });
+      const mine = me.figures[play.figure]!;
+      const theirs = state.players[play.target]!.figures[play.targetFigure]!;
+      [mine.pos, theirs.pos] = [theirs.pos, mine.pos];
+      emit({ type: "Swapped", player: p, ...pick(play) });
       return;
     }
     case "steal": {
-      getSlot(s.players[play.target]!, play.slot).stage = HAS_GUN;
-      const mine = getSlot(me, play.slot);
-      const loaded = mine.status === "alive" && mine.stage === HAS_GUN;
-      if (loaded) mine.stage = ARMED;
-      emit(d, { type: "BulletsStolen", player: p, target: play.target, slot: play.slot, loaded });
+      state.players[play.target]!.figures[play.targetFigure]!.stage = HAS_GUN;
+      me.figures[play.figure]!.stage = LOADED;
+      emit({ type: "BulletsStolen", player: p, ...pick(play) });
       return;
     }
+    case "reroll":
+      openBook(state, p, action.page!, action.luck ?? 0, emit);
+      return;
   }
 }
 
-function resolvePages(d: Draft, p: PlayerIndex, sub: Submission): void {
-  const s = d.s;
-  const me = s.players[p]!;
-  sub.pages.forEach((page, i) => {
-    emit(d, { type: "BookOpened", player: p, page, digit: page % 10 });
-    const card = sub.draws[i];
-    if (card) {
-      if (me.hand.length < HAND_LIMIT) {
-        me.hand.push(card);
-        emit(d, { type: "CardDrawn", player: p, card });
-      } else {
-        emit(d, { type: "HandFull", player: p });
-      }
-    }
-    if (i < sub.pages.length - 1)
-      emit(d, { type: "RerollGranted", player: p, slot: slotForPage(page)! });
-  });
+const pick = (play: { figure: number; target: number; targetFigure: number }) => ({
+  figure: play.figure,
+  target: play.target,
+  targetFigure: play.targetFigure,
+});
 
-  const page = sub.pages.at(-1);
-  if (page === undefined) return; // left without opening (cannot normally happen)
-  const n = slotForPage(page);
-  if (n === null) return emit(d, { type: "TurnWasted", player: p, reason: "even_digit" });
-  const slot = getSlot(me, n);
-  if (slot.status === "eliminated") {
-    return emit(d, { type: "TurnWasted", player: p, reason: "slot_eliminated" });
+function doMove(state: GameState, p: PlayerIndex, move: Move, emit: Emit) {
+  const me = state.players[p]!;
+  const roll = state.turn.roll!;
+  if (move.kind === "pass") {
+    emit({ type: "Passed", player: p });
+    return;
   }
-  if (slot.stage < ARMED) {
-    slot.stage = (slot.stage + 1) as Stage;
-    emit(d, {
+  const f = me.figures[move.figure];
+  if (!f || f.dead) throw new EngineError("No such figure");
+
+  if (move.kind === "draw") {
+    if (f.stage >= LOADED) throw new EngineError("That figure is complete");
+    f.stage = (f.stage + 1) as Stage;
+    me.stats.parts++;
+    emit({
       type: "PartDrawn",
       player: p,
-      slot: n,
-      part: PARTS[slot.stage - 1]!,
-      stage: slot.stage,
+      figure: move.figure,
+      part: PARTS[f.stage - 1]!,
+      stage: f.stage,
     });
     return;
   }
-  fire(d, p, n, sub);
-}
 
-function fire(d: Draft, p: PlayerIndex, n: SlotNumber, sub: Submission): void {
-  const s = d.s;
-  const me = s.players[p]!;
-  const doubleQueued = sub.card?.card === "double_shot";
-  // Targets chosen while flipping may be gone; if none were chosen (the slot only became
-  // armed during resolve, e.g. by a steal), aim automatically.
-  let targets = sub.targets.length ? sub.targets : suggestTargets(s, p, n, doubleQueued ? 2 : 1);
-  const usesDouble = doubleQueued && targets.length === 2;
-  if (usesDouble) {
-    me.hand.splice(me.hand.indexOf("double_shot"), 1);
-    emit(d, { type: "CardPlayed", player: p, play: { card: "double_shot" } });
-  } else if (doubleQueued) {
-    targets = targets.slice(0, 1);
-  }
-  emit(d, { type: "ShotFired", attacker: p, targets, slot: n });
-
-  for (const t of targets) {
-    const victim = s.players[t]!;
-    const sl = getSlot(victim, n);
-    if (victim.out) {
-      emit(d, { type: "AttackMissed", attacker: p, target: t, slot: n, reason: "target_out" });
-    } else if (sl.status === "eliminated") {
-      emit(d, {
-        type: "AttackMissed",
-        attacker: p,
-        target: t,
-        slot: n,
-        reason: "target_eliminated",
+  if (move.kind === "move") {
+    if (f.stage < CAN_WALK) throw new EngineError("A figure needs a face before it can walk");
+    const to = destination(state, p, move.figure, roll);
+    const from = f.pos;
+    const victims = stompVictims(state, p, to);
+    f.pos = to;
+    me.stats.squares += roll;
+    emit({ type: "FigureMoved", player: p, figure: move.figure, from, to });
+    for (const v of victims) {
+      const target = state.players[v.player]!.figures[v.figure]!;
+      if (target.shielded) {
+        target.shielded = false;
+        emit({ type: "ShieldBroken", player: p, target: v.player, targetFigure: v.figure });
+        continue;
+      }
+      target.pos = null;
+      target.stage = Math.min(target.stage, CAN_WALK) as Stage;
+      me.stats.stomps++;
+      emit({
+        type: "Stomped",
+        player: p,
+        figure: move.figure,
+        target: v.player,
+        targetFigure: v.figure,
+        stage: target.stage,
       });
-    } else if (sl.shielded) {
-      sl.shielded = false;
-      emit(d, { type: "ShotBlocked", attacker: p, target: t, slot: n });
-    } else if (sl.stage >= HAS_GUN) {
-      sl.status = "eliminated";
-      emit(d, { type: "SlotEliminated", attacker: p, target: t, slot: n });
-      if (lostCount(victim) >= s.rules.lives) knockOut(d, t, "shot", p);
-    } else if (s.rules.unarmedTarget === "destroy_partial" && sl.stage > 0) {
-      sl.stage = 0;
-      emit(d, { type: "FigureDestroyed", attacker: p, target: t, slot: n });
-    } else {
-      emit(d, { type: "AttackMissed", attacker: p, target: t, slot: n, reason: "target_unarmed" });
+    }
+    return;
+  }
+
+  // shoot
+  const allowed = shootTargets(state, p, move.figure, roll);
+  if (!canShoot(f)) throw new EngineError("That figure can't shoot");
+  const max = state.turn.doubleShot ? 2 : 1;
+  const keys = new Set(move.targets.map((t) => `${t.player}:${t.figure}`));
+  if (move.targets.length < 1 || move.targets.length > max || keys.size !== move.targets.length) {
+    throw new EngineError(max === 2 ? "Pick one or two targets" : "Pick one target");
+  }
+  for (const t of move.targets) {
+    if (!allowed.some((a) => a.player === t.player && a.figure === t.figure)) {
+      throw new EngineError("That target is out of range");
     }
   }
-
-  if (s.rules.bullets === "consumed") {
-    getSlot(me, n).stage = HAS_GUN;
-    emit(d, { type: "BulletsSpent", player: p, slot: n });
+  me.stats.shots++;
+  emit({ type: "ShotFired", player: p, figure: move.figure, targets: move.targets });
+  const hit = new Set<PlayerIndex>();
+  for (const t of move.targets) {
+    const target = state.players[t.player]!.figures[t.figure]!;
+    if (target.shielded) {
+      target.shielded = false;
+      emit({ type: "ShieldBroken", player: p, target: t.player, targetFigure: t.figure });
+      continue;
+    }
+    target.dead = true;
+    target.pos = null;
+    me.stats.kills++;
+    state.players[t.player]!.stats.deaths++;
+    hit.add(t.player);
+    emit({
+      type: "FigureKilled",
+      player: p,
+      figure: move.figure,
+      target: t.player,
+      targetFigure: t.figure,
+    });
   }
-  checkLastStanding(d);
-}
-
-function knockOut(d: Draft, p: PlayerIndex, reason: "shot" | "left", by: PlayerIndex | null): void {
-  const pl = d.s.players[p]!;
-  if (pl.out) return;
-  pl.out = true;
-  for (const sl of pl.slots) sl.shielded = false;
-  d.s.pending[p] = null;
-  emit(d, { type: "PlayerOut", player: p, reason, by });
-}
-
-function end(d: Draft, winner: PlayerIndex | null, reason: EndReason): void {
-  d.s.phase = "finished";
-  d.s.winner = winner;
-  d.s.endReason = reason;
-  emit(d, { type: "GameOver", winner, reason });
-}
-
-function checkLastStanding(d: Draft): boolean {
-  const active = activePlayers(d.s);
-  if (active.length > 1) return false;
-  end(d, active[0] ?? null, "last_standing");
-  return true;
-}
-
-/** Ends the game if no slot number is alive for two players still in (nobody can be hit). */
-function checkStalemate(d: Draft): boolean {
-  const s = d.s;
-  const active = activePlayers(s);
-  const contested = SLOT_NUMBERS.some(
-    (n) => active.filter((i) => getSlot(s.players[i]!, n).status === "alive").length >= 2,
-  );
-  if (contested) return false;
-  if (s.rules.stalemate === "draw") {
-    end(d, null, "stalemate");
-    return true;
+  if (state.rules.bullets === "consumed") {
+    f.stage = HAS_GUN;
+    emit({ type: "BulletsSpent", player: p, figure: move.figure });
   }
-  const best = Math.max(...active.map((i) => aliveCount(s.players[i]!)));
-  const leaders = active.filter((i) => aliveCount(s.players[i]!) === best);
-  end(d, leaders.length === 1 ? leaders[0]! : null, "stalemate");
-  return true;
+  // Everyone wiped out by the same shot shares a place.
+  const wiped = [...hit].filter((t) => figuresLeft(state.players[t]!) === 0);
+  const place = state.players.filter((x) => !x.out).length - wiped.length + 1;
+  for (const t of wiped) knockOut(state, t, "shot", p, emit, place);
 }
 
-/** Replays a history of actions from a fresh game. */
-export function replay(initial: GameState, actions: readonly Action[]): GameState {
-  return actions.reduce((s, a) => applyAction(s, a).state, initial);
+function knockOut(
+  state: GameState,
+  p: PlayerIndex,
+  reason: "shot" | "left",
+  by: PlayerIndex | null,
+  emit: Emit,
+  place = state.players.filter((x) => !x.out).length,
+) {
+  const player = state.players[p]!;
+  player.out = true;
+  player.place = place;
+  player.hand = [];
+  for (const f of player.figures) {
+    f.pos = null;
+    f.shielded = false;
+    if (reason === "left") f.dead = true;
+  }
+  emit({ type: "PlayerOut", player: p, reason, by, place });
+  const left = state.players.flatMap((x, i) => (x.out ? [] : [i]));
+  if (left.length <= 1) {
+    const winner = left[0] ?? null;
+    if (winner !== null) state.players[winner]!.place = 1;
+    finish(state, winner, "last_standing", emit);
+  }
+}
+
+function finish(
+  state: GameState,
+  winner: PlayerIndex | null,
+  reason: "last_standing" | "time_up",
+  emit: Emit,
+) {
+  state.phase = "finished";
+  state.winner = winner;
+  state.endReason = reason;
+  for (const pl of state.players) {
+    for (const f of pl.figures) f.shielded = false;
+  }
+  emit({
+    type: "GameOver",
+    winner,
+    reason,
+    places: state.players.map((x) => x.place ?? state.players.length),
+  });
+}
+
+/** Ends the turn: next player still in, a new round when it wraps past the first seat. */
+function endTurn(state: GameState, emit: Emit) {
+  const n = state.players.length;
+  const cur = state.turn.player;
+  const rel = (i: number) => (i - state.firstSeat + n) % n;
+  let next = cur;
+  for (let k = 1; k <= n; k++) {
+    const i = (cur + k) % n;
+    if (!state.players[i]!.out) {
+      next = i;
+      break;
+    }
+  }
+  if (rel(next) <= rel(cur)) {
+    state.round++;
+    const max = state.rules.maxRounds;
+    if (max !== null && state.round > max) {
+      state.round = max;
+      return timeUp(state, emit);
+    }
+  }
+  state.turnNumber++;
+  state.turn = { player: next, page: null, roll: null, cardPlayed: false, doubleShot: false };
+  emit({ type: "TurnStarted", player: next, round: state.round, turn: state.turnNumber });
+}
+
+/** The round limit was reached: rank who's left by figures, then kills. Ties share a place. */
+function timeUp(state: GameState, emit: Emit) {
+  const left = state.players.flatMap((x, i) => (x.out ? [] : [i]));
+  const score = (i: number) => {
+    const pl = state.players[i]!;
+    return [figuresLeft(pl), pl.stats.kills] as const;
+  };
+  const better = (a: number, b: number) => {
+    const [fa, ka] = score(a);
+    const [fb, kb] = score(b);
+    return fa !== fb ? fb - fa : kb - ka;
+  };
+  left.sort(better);
+  left.forEach((i, k) => {
+    const prev = left[k - 1];
+    state.players[i]!.place =
+      prev !== undefined && better(prev, i) === 0 ? state.players[prev]!.place : k + 1;
+  });
+  const firsts = left.filter((i) => state.players[i]!.place === 1);
+  finish(state, firsts.length === 1 ? firsts[0]! : null, "time_up", emit);
+}
+
+/** Rebuilds a game from its starting state and action history (both from the server). */
+export function replay(initial: GameState, history: Action[]): GameState {
+  let s = initial;
+  for (const a of history) s = applyAction(s, a).state;
+  return s;
 }

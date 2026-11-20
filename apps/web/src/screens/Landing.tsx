@@ -60,22 +60,30 @@ export function Landing() {
       <details className="howto">
         <summary>How to play</summary>
         <ol>
-          <li>2 to 6 players. Everyone has 5 slots: 1, 3, 5, 7 and 9.</li>
           <li>
-            Every round, everyone opens the book at the same time. The last digit of your page picks
-            your slot. Even digits mean no game.
+            2 to 6 players around one loop track. Everyone has 3 stick figures at home, each with a
+            head and body already drawn.
           </li>
           <li>
-            Each time a slot is picked you draw one more part: head, body, face, gun, bullets.
+            On your turn, open the book. The last digit of the page is your roll (0 counts as 10).
           </li>
           <li>
-            Pick an armed slot and you choose who to shoot. You hit their figure with the same
-            number if it has a gun.
+            Then do one thing: ✏️ draw the next part on a figure (face, gun, bullets), 🚶 walk a
+            figure with a face exactly that many squares, or 🔫 shoot with a loaded figure at anyone
+            up to that many squares away. Shooting uses up the bullets.
           </li>
-          <li>Lose 3 slots and you're out. The last player standing wins.</li>
+          <li>
+            Land exactly on an enemy to 🦶 stomp it back home (it drops its gun). ★ squares are
+            safe: nobody there can be shot or stomped, and nobody can shoot from one.
+          </li>
+          <li>
+            Figures at home can be shot from near their start square, so don't hide forever. Lose
+            all your figures and you're out. Last one standing wins, and everyone gets a place on
+            the podium.
+          </li>
           <li>
             Lucky pages (11, 22, 100, 111...) give cards: 🛡️ Shield, 💥 Double shot, 🧽 Eraser, 🔄
-            Swap and 🫳 Steal.
+            Swap, 🫳 Steal and 🎲 Reroll.
           </li>
         </ol>
       </details>

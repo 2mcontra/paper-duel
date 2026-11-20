@@ -1,98 +1,138 @@
-/** Slot numbers are fixed to the odd digits (rule R1, decided). */
-export const SLOT_NUMBERS = [1, 3, 5, 7, 9] as const;
-export type SlotNumber = (typeof SLOT_NUMBERS)[number];
-
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 6;
 
-/** 0 empty, 1 head, 2 body, 3 face, 4 gun, 5 loaded (armed). */
+/** Squares of track between one player's start square and the next player's. */
+export const SQUARES_PER_SEAT = 10;
+/** Every 5th square is a star: start squares and the halfway points between them. */
+export const STAR_EVERY = 5;
+
+/** 0 empty, 1 head, 2 body, 3 face, 4 gun, 5 loaded. */
 export type Stage = 0 | 1 | 2 | 3 | 4 | 5;
-export const ARMED: Stage = 5;
+/** A figure with a face can see where it's going: it may walk onto the track. */
+export const CAN_WALK: Stage = 3;
 export const HAS_GUN: Stage = 4;
+export const LOADED: Stage = 5;
+/** Figures start with a head and body already drawn. */
+export const START_STAGE: Stage = 2;
 
 export type Part = "head" | "body" | "face" | "gun" | "bullets";
-/** The part added when a slot moves *to* a stage; index = stage - 1. */
+/** The part added when a figure moves *to* a stage; index = stage - 1. */
 export const PARTS: readonly Part[] = ["head", "body", "face", "gun", "bullets"];
 
-export const CARDS = ["shield", "double_shot", "eraser", "swap", "steal"] as const;
+export const CARDS = ["shield", "double_shot", "eraser", "swap", "steal", "reroll"] as const;
 export type Card = (typeof CARDS)[number];
 export const HAND_LIMIT = 3;
 
-export type SlotStatus = "alive" | "eliminated";
 /** Seat index in the game, 0 .. players.length - 1. */
 export type PlayerIndex = number;
+/** Index of a figure in its player's `figures`, 0 .. figures - 1. */
+export type FigureIndex = number;
 
-export interface Slot {
-  number: SlotNumber;
+export interface Figure {
   stage: Stage;
-  status: SlotStatus;
+  /** Square on the track, or null while at home. */
+  pos: number | null;
+  dead: boolean;
+  /** Blocks the next shot or stomp. */
   shielded: boolean;
+}
+
+export interface PlayerStats {
+  kills: number;
+  stomps: number;
+  /** Parts drawn on figures. */
+  parts: number;
+  shots: number;
+  cardsPlayed: number;
+  /** Figures lost. */
+  deaths: number;
+  /** Sum of every roll, and how many there were (for the average). */
+  rollTotal: number;
+  rolls: number;
+  /** Squares walked. */
+  squares: number;
 }
 
 export interface PlayerState {
   id: string;
   name: string;
-  slots: Slot[];
-  /** Knocked out (lost `lives` slots) or left the game. */
-  out: boolean;
+  figures: Figure[];
   hand: Card[];
+  /** All figures dead, or left the game. */
+  out: boolean;
+  /** Finishing position (1 = winner), set when the player is out or the game ends. */
+  place: number | null;
+  stats: PlayerStats;
+}
+
+/** One target of a shot. */
+export interface FigureRef {
+  player: PlayerIndex;
+  figure: FigureIndex;
 }
 
 export type CardPlay =
-  | { card: "shield"; slot: SlotNumber }
+  | { card: "shield"; figure: FigureIndex }
   | { card: "double_shot" }
-  | { card: "eraser"; target: PlayerIndex; slot: SlotNumber }
-  | { card: "swap"; slots: [SlotNumber, SlotNumber] }
-  | { card: "steal"; target: PlayerIndex; slot: SlotNumber };
+  | { card: "eraser"; target: PlayerIndex; targetFigure: FigureIndex }
+  | { card: "swap"; figure: FigureIndex; target: PlayerIndex; targetFigure: FigureIndex }
+  | { card: "steal"; figure: FigureIndex; target: PlayerIndex; targetFigure: FigureIndex }
+  | { card: "reroll" };
 
-/** What one player has done so far this round. Hidden from other players until it resolves. */
-export interface Submission {
-  /** Every page opened this round. More than one only after R6 rerolls; the last one counts. */
-  pages: number[];
-  /** Card drawn from each page (lucky pages only), aligned with `pages`. Joins the hand on resolve. */
-  draws: (Card | null)[];
-  /** Who an armed slot fires at (two with a queued double shot). */
-  targets: PlayerIndex[];
-  /** Waiting for the player to pick a target. */
-  needsTarget: boolean;
-  card: CardPlay | null;
-  done: boolean;
-}
+/** What the current player does with their roll. One per turn. */
+export type Move =
+  /** Add the next part to a figure (anywhere). */
+  | { kind: "draw"; figure: FigureIndex }
+  /** Walk a figure exactly `roll` squares (from home: enter at your start square). */
+  | { kind: "move"; figure: FigureIndex }
+  /** A loaded figure on the track shoots up to `roll` squares away (2 targets with a double shot). */
+  | { kind: "shoot"; figure: FigureIndex; targets: FigureRef[] }
+  | { kind: "pass" };
 
 export type Phase = "playing" | "finished";
-export type EndReason = "last_standing" | "stalemate";
+export type EndReason = "last_standing" | "time_up";
 
 export interface RulesConfig {
-  /** R2: who is first in the round order in round 1. The server applies this. */
+  /** Who takes the first turn. The server applies this. */
   firstPlayer: "random" | "host";
-  /** R4: shooting a slot without a gun misses, or resets that partial figure to empty. */
-  unarmedTarget: "miss" | "destroy_partial";
-  /** R5: firing drops the figure back to "gun, 0 bullets", or the bullets are reusable. */
+  /** Shooting uses up the bullets (reload by drawing them again), or they stay loaded. */
   bullets: "consumed" | "reusable";
-  /** R6: opening the book on your own dead slot wastes your go, or you open it again. */
-  ownDeadSlot: "waste" | "reroll";
-  /** R9: pages in the book. A positive multiple of 10 so every digit is equally likely. */
+  /** Pages in the book. A multiple of 10 so every last digit is equally likely. */
   totalPages: number;
-  /** Seconds per round before the server acts for anyone not done; null disables. */
-  roundTimerSeconds: number | null;
-  /** Slots a player can lose before they are out, 1..5. */
-  lives: number;
+  /** Seconds per turn before the server plays it for you; null disables. */
+  turnTimerSeconds: number | null;
+  /** Stick figures per player, 1..5. Lose them all and you're out. */
+  figures: number;
   /** Lucky pages give cards. */
   luckyCards: boolean;
-  /** R11: nobody can be hit any more. Most living slots wins, or always a draw. */
-  stalemate: "most_alive" | "draw";
+  /** The game ends after this many rounds (most figures left wins); null = play to the end. */
+  maxRounds: number | null;
+}
+
+export interface TurnState {
+  player: PlayerIndex;
+  /** The page opened this turn, and the roll it gives; null before the book is opened. */
+  page: number | null;
+  roll: number | null;
+  /** A card has been played this turn (one per turn). */
+  cardPlayed: boolean;
+  /** A double shot is active: the next shot may hit two targets. */
+  doubleShot: boolean;
 }
 
 export interface GameState {
   id: string;
   phase: Phase;
   players: PlayerState[];
-  /** 1-based round number. */
+  /** Squares on the shared track (SQUARES_PER_SEAT per player). */
+  trackLength: number;
+  /** 1-based round number; a round is one turn for each player still in. */
   round: number;
-  /** Seat that starts the round order in round 1; the order rotates by one seat each round. */
+  /** 1-based turn number over the whole game. */
+  turnNumber: number;
+  /** Seat that took the first turn; rounds start with it (or the next player still in). */
   firstSeat: PlayerIndex;
-  /** This round's submissions, by seat. null for players who are out. */
-  pending: (Submission | null)[];
+  turn: TurnState;
   /** Append-only event log. */
   log: GameEvent[];
   /** Every action applied, in order. Server-side only: replaying it rebuilds the game. */
@@ -103,56 +143,98 @@ export interface GameState {
   rules: RulesConfig;
 }
 
-export type MissReason = "target_eliminated" | "target_unarmed" | "target_out";
-export type WasteReason = "even_digit" | "slot_eliminated";
 export type OutReason = "shot" | "left";
 
 export type GameEvent =
-  | { type: "RoundStarted"; round: number; order: PlayerIndex[] }
-  /** Emitted while flipping: this player has finished their go (details come at resolve). */
-  | { type: "PlayerReady"; player: PlayerIndex }
-  | { type: "CardPlayed"; player: PlayerIndex; play: CardPlay }
-  | { type: "CardFizzled"; player: PlayerIndex; card: Card }
-  | { type: "ShieldRaised"; player: PlayerIndex; slot: SlotNumber }
-  | { type: "PartErased"; player: PlayerIndex; target: PlayerIndex; slot: SlotNumber; stage: Stage }
-  | { type: "SlotsSwapped"; player: PlayerIndex; slots: [SlotNumber, SlotNumber] }
-  | {
-      type: "BulletsStolen";
-      player: PlayerIndex;
-      target: PlayerIndex;
-      slot: SlotNumber;
-      loaded: boolean;
-    }
-  | { type: "BookOpened"; player: PlayerIndex; page: number; digit: number }
+  | { type: "TurnStarted"; player: PlayerIndex; round: number; turn: number }
+  | { type: "BookOpened"; player: PlayerIndex; page: number; roll: number }
   /** card is null in views for other players: they only learn that a card was drawn. */
   | { type: "CardDrawn"; player: PlayerIndex; card: Card | null }
   | { type: "HandFull"; player: PlayerIndex }
-  | { type: "TurnWasted"; player: PlayerIndex; reason: WasteReason }
-  | { type: "RerollGranted"; player: PlayerIndex; slot: SlotNumber }
-  | { type: "PartDrawn"; player: PlayerIndex; slot: SlotNumber; part: Part; stage: Stage }
-  | { type: "ShotFired"; attacker: PlayerIndex; targets: PlayerIndex[]; slot: SlotNumber }
-  | { type: "SlotEliminated"; attacker: PlayerIndex; target: PlayerIndex; slot: SlotNumber }
-  | { type: "ShotBlocked"; attacker: PlayerIndex; target: PlayerIndex; slot: SlotNumber }
-  | { type: "FigureDestroyed"; attacker: PlayerIndex; target: PlayerIndex; slot: SlotNumber }
+  | { type: "CardPlayed"; player: PlayerIndex; play: CardPlay }
+  | { type: "ShieldRaised"; player: PlayerIndex; figure: FigureIndex }
   | {
-      type: "AttackMissed";
-      attacker: PlayerIndex;
+      type: "PartErased";
+      player: PlayerIndex;
       target: PlayerIndex;
-      slot: SlotNumber;
-      reason: MissReason;
+      figure: FigureIndex;
+      stage: Stage;
     }
-  | { type: "BulletsSpent"; player: PlayerIndex; slot: SlotNumber }
-  /** Knocked out earlier in this round's order, so their go is lost. */
-  | { type: "GoLost"; player: PlayerIndex }
-  | { type: "PlayerOut"; player: PlayerIndex; reason: OutReason; by: PlayerIndex | null }
-  | { type: "GameOver"; winner: PlayerIndex | null; reason: EndReason };
+  | {
+      type: "Swapped";
+      player: PlayerIndex;
+      figure: FigureIndex;
+      target: PlayerIndex;
+      targetFigure: FigureIndex;
+    }
+  | {
+      type: "BulletsStolen";
+      player: PlayerIndex;
+      figure: FigureIndex;
+      target: PlayerIndex;
+      targetFigure: FigureIndex;
+    }
+  | { type: "PartDrawn"; player: PlayerIndex; figure: FigureIndex; part: Part; stage: Stage }
+  | {
+      type: "FigureMoved";
+      player: PlayerIndex;
+      figure: FigureIndex;
+      /** null = came out of home. */
+      from: number | null;
+      to: number;
+    }
+  /** Landed on an enemy: it is knocked back home and drops its gun. */
+  | {
+      type: "Stomped";
+      player: PlayerIndex;
+      figure: FigureIndex;
+      target: PlayerIndex;
+      targetFigure: FigureIndex;
+      stage: Stage;
+    }
+  | {
+      type: "ShotFired";
+      player: PlayerIndex;
+      figure: FigureIndex;
+      targets: FigureRef[];
+    }
+  | {
+      type: "FigureKilled";
+      player: PlayerIndex;
+      figure: FigureIndex;
+      target: PlayerIndex;
+      targetFigure: FigureIndex;
+    }
+  /** A shield took the hit (shot or stomp) and is used up. */
+  | {
+      type: "ShieldBroken";
+      player: PlayerIndex;
+      target: PlayerIndex;
+      targetFigure: FigureIndex;
+    }
+  | { type: "BulletsSpent"; player: PlayerIndex; figure: FigureIndex }
+  | { type: "Passed"; player: PlayerIndex }
+  | {
+      type: "PlayerOut";
+      player: PlayerIndex;
+      reason: OutReason;
+      by: PlayerIndex | null;
+      place: number;
+    }
+  | {
+      type: "GameOver";
+      winner: PlayerIndex | null;
+      reason: EndReason;
+      /** Finishing place per seat (1 = first; ties share a place). */
+      places: number[];
+    };
 
 export type Action =
   /** `luck` is a server random integer >= 0; it picks the card if the page is lucky. */
   | { type: "open_book"; player: PlayerIndex; page: number; luck: number }
-  | { type: "set_target"; player: PlayerIndex; targets: PlayerIndex[] }
-  /** null cancels a queued card. Only before opening the book. */
-  | { type: "play_card"; player: PlayerIndex; play: CardPlay | null }
+  /** After opening the book, before acting; one per turn. A reroll needs a new page and luck. */
+  | { type: "play_card"; player: PlayerIndex; play: CardPlay; page?: number; luck?: number }
+  | { type: "act"; player: PlayerIndex; move: Move }
   /** The player left or ran out of reconnect time. */
   | { type: "leave"; player: PlayerIndex };
 

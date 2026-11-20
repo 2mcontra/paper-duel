@@ -12,7 +12,7 @@
  */
 import { parseArgs } from "node:util";
 import WebSocket from "ws";
-import { isHidden, type GameView } from "@paper-duel/engine";
+import { legalMoves, type GameView } from "@paper-duel/engine";
 import type { ClientMessage, ServerMessage } from "@paper-duel/protocol";
 
 const { values } = parseArgs({
@@ -102,35 +102,25 @@ class Bot {
     }
   }
 
-  /** Schedules this bot's next step in the current round, once. */
+  /** Schedules this bot's next step on its turn, once. */
   private plan(): void {
     const g = this.game;
-    if (!g || g.phase !== "playing") return;
-    const sub = g.pending[this.you];
-    if (!sub || isHidden(sub) || sub.done) return;
-    const key = `${g.id}:${g.round}:${sub.pages.length}:${sub.needsTarget}`;
+    if (!g || g.phase !== "playing" || g.turn.player !== this.you) return;
+    const key = `${g.id}:${g.turnNumber}:${g.turn.roll}`;
     if (key === this.stepKey) return;
     this.stepKey = key;
     setTimeout(() => {
       const cur = this.game;
-      const s = cur?.pending[this.you];
-      if (
-        !cur ||
-        !s ||
-        isHidden(s) ||
-        s.done ||
-        `${cur.id}:${cur.round}:${s.pages.length}:${s.needsTarget}` !== key
-      )
-        return;
+      if (!cur || `${cur.id}:${cur.turnNumber}:${cur.turn.roll}` !== key) return;
       this.sentAt = performance.now();
-      if (s.needsTarget) {
-        const want = s.card?.card === "double_shot" ? 2 : 1;
-        const targets = cur.players
-          .flatMap((p, i) => (i !== this.you && !p.out ? [i] : []))
-          .slice(0, want);
-        this.send({ type: "set_target", targets });
-      } else {
+      if (cur.turn.roll === null) {
         this.send({ type: "open_book" });
+      } else {
+        const moves = legalMoves(cur, this.you);
+        const move = moves.find((m) => m.kind === "shoot") ??
+          moves.find((m) => m.kind === "draw") ??
+          moves.find((m) => m.kind === "move") ?? { kind: "pass" as const };
+        this.send({ type: "act", move });
       }
     }, think());
   }

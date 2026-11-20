@@ -4,6 +4,7 @@ import {
   type CardPlay,
   type GameEvent,
   type GameView,
+  type Move,
   type PlayerIndex,
   type RulesOverrides,
 } from "@paper-duel/engine";
@@ -42,18 +43,18 @@ export interface GameStore {
   game: GameView | null;
   /** Events from the latest update, for highlighting what just happened. */
   lastEvents: GameEvent[];
-  /** Players the server acted for in the latest update (round timer ran out). */
+  /** Players the server played for in the latest update (their turn timer ran out). */
   lastAuto: PlayerIndex[];
   /**
-   * While a round is being revealed: the board as replayed so far (behind `game`, which is
-   * already the server's final state). null when nothing is being revealed.
+   * While events are being played back: the board as replayed so far (behind `game`, which
+   * is already the server's final state). null when nothing is playing back.
    */
   shown: GameView | null;
   /** The event being shown right now, with a sequence number to restart animations. */
   current: { event: GameEvent; seq: number } | null;
   reveal: { done: number; total: number } | null;
   muted: boolean;
-  timer: { round: number; deadline: number | null } | null;
+  timer: { turn: number; deadline: number | null } | null;
   emotes: EmoteBubble[];
   /** Server clock minus local clock, so countdowns match the server. */
   clockOffset: number;
@@ -68,9 +69,9 @@ export interface GameStore {
   configure(change: { rules?: RulesOverrides; maxPlayers?: number }): void;
   setReady(ready: boolean): void;
   start(): void;
-  playCard(play: CardPlay | null): void;
+  playCard(play: CardPlay): void;
   openBook(): void;
-  setTarget(targets: PlayerIndex[]): void;
+  act(move: Move): void;
   emote(emote: Emote): void;
   rematch(): void;
   leave(): void;
@@ -141,15 +142,20 @@ export const useGame = create<GameStore>()((set, get) => {
         return play("flip");
       case "PartDrawn":
         return play("pencil");
+      case "FigureMoved":
+        return play("step");
+      case "Stomped":
+        if (e.target === you) buzz([60, 30, 60]);
+        return play("stomp");
       case "ShotFired":
-        if (e.attacker === you) buzz(30);
+        if (e.player === you) buzz(30);
         return play("pew");
-      case "SlotEliminated":
+      case "FigureKilled":
         if (e.target === you) buzz([80, 40, 80]);
         return play("boom");
-      case "ShotBlocked":
+      case "ShieldBroken":
         return play("clang");
-      case "AttackMissed":
+      case "Passed":
         return play("miss");
       case "CardDrawn":
         return play("chime");
@@ -185,7 +191,9 @@ export const useGame = create<GameStore>()((set, get) => {
         current: { event: e, seq: ++seq },
         reveal: r ? { ...r, done: r.done + 1 } : null,
       });
-      const ms = instant ? 0 : (STEP_MS[e.type] ?? 0);
+      // Fall behind and the playback speeds up, so the board never lags far behind the game.
+      const catchUp = queue.length > 10 ? 0.15 : queue.length > 4 ? 0.45 : 1;
+      const ms = instant ? 0 : Math.round((STEP_MS[e.type] ?? 0) * catchUp);
       if (ms > 0) {
         sfx(e);
         stepTimer = setTimeout(step, ms);
@@ -194,9 +202,9 @@ export const useGame = create<GameStore>()((set, get) => {
     }
   };
 
-  /** Queues events for the reveal, starting from the board shown before this update. */
+  /** Queues events for playback, starting from the board shown before this update. */
   const startReveal = (before: GameView, events: GameEvent[]) => {
-    const fresh = events.filter((e) => e.type !== "PlayerReady");
+    const fresh = events;
     if (!get().reveal) {
       set({ shown: before, reveal: { done: 0, total: 0 } });
     }
@@ -231,8 +239,9 @@ export const useGame = create<GameStore>()((set, get) => {
         if (before && needsReveal(msg.events)) startReveal(before, msg.events);
         return;
       }
-      case "round_timer":
-        return set({ timer: { round: msg.round, deadline: msg.deadline } });
+      case "turn_timer":
+        if (get().game?.turn.player === get().you) play("yourturn");
+        return set({ timer: { turn: msg.turn, deadline: msg.deadline } });
       case "game_over":
         return set({ game: msg.game, timer: null, busy: false });
       case "emote": {
@@ -287,13 +296,19 @@ export const useGame = create<GameStore>()((set, get) => {
     configure: (change) => send({ type: "configure", ...change }),
     setReady: (ready) => send({ type: "ready", ready }),
     start: () => send({ type: "start" }),
-    playCard: (play) => send({ type: "play_card", play }, true),
+    playCard: (play) => {
+      if (get().busy) return;
+      send({ type: "play_card", play }, true);
+    },
     openBook() {
       if (get().busy || get().reveal) return;
       play("flip");
       send({ type: "open_book" }, true);
     },
-    setTarget: (targets) => send({ type: "set_target", targets }, true),
+    act: (move) => {
+      if (get().busy || get().reveal) return;
+      send({ type: "act", move }, true);
+    },
     emote: (emote) => send({ type: "emote", emote }),
     rematch: () => send({ type: "rematch" }),
     leave: () => send({ type: "leave" }),

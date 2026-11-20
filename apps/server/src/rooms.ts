@@ -4,11 +4,11 @@ import {
   MIN_PLAYERS,
   RulesError,
   applyAction,
+  botTurn,
   createGame,
   redactEvent,
   resolveRules,
-  slotForPage,
-  suggestTargets,
+  seriesPoints,
   viewFor,
   type Action,
   type GameEvent,
@@ -59,6 +59,9 @@ interface Seat {
   graceTimer: Timer | null;
   graceDeadline: number | null;
   lastEmoteAt: number;
+  /** Series score in this room. */
+  points: number;
+  wins: number;
 }
 
 interface Room {
@@ -70,8 +73,8 @@ interface Room {
   seats: Seat[];
   rules: RulesConfig;
   game: GameState | null;
-  roundTimer: Timer | null;
-  roundDeadline: number | null;
+  turnTimer: Timer | null;
+  turnDeadline: number | null;
   /** Last time a player did anything here (for closing idle rooms). */
   lastActivity: number;
 }
@@ -192,7 +195,7 @@ export class RoomManager {
   shutdown(): void {
     clearInterval(this.sweeper);
     for (const room of this.rooms.values()) {
-      this.clearRoundTimer(room);
+      this.clearTurnTimer(room);
       for (const seat of room.seats) if (seat.graceTimer) clearTimeout(seat.graceTimer);
     }
     this.rooms.clear();
@@ -227,16 +230,22 @@ export class RoomManager {
         return this.setReady(conn, msg.ready);
       case "start":
         return this.start(conn);
-      case "play_card":
-        return this.gameAction(conn, (player) => ({ type: "play_card", player, play: msg.play }));
       case "open_book":
         return this.gameAction(conn, (player, room) => this.openBookAction(room, player));
-      case "set_target":
-        return this.gameAction(conn, (player) => ({
-          type: "set_target",
-          player,
-          targets: msg.targets,
-        }));
+      case "play_card":
+        return this.gameAction(conn, (player, room) =>
+          msg.play.card === "reroll"
+            ? {
+                type: "play_card",
+                player,
+                play: msg.play,
+                page: this.opts.randomPage(room.game!.rules.totalPages),
+                luck: this.opts.randomInt(1_000_000),
+              }
+            : { type: "play_card", player, play: msg.play },
+        );
+      case "act":
+        return this.gameAction(conn, (player) => ({ type: "act", player, move: msg.move }));
       case "emote":
         return this.emote(conn, msg.emote);
       case "rematch":
@@ -311,7 +320,7 @@ export class RoomManager {
     conn.send({ type: "room_state", room: this.view(room) });
     if (room.game) conn.send({ type: "game_state", game: viewFor(room.game, you) });
     if (room.phase === "playing" && room.game) {
-      conn.send({ type: "round_timer", round: room.game.round, deadline: room.roundDeadline });
+      conn.send({ type: "turn_timer", turn: room.game.turnNumber, deadline: room.turnDeadline });
     }
     if (wasDisconnected) {
       this.broadcastRoom(room, seat);
@@ -404,9 +413,10 @@ export class RoomManager {
 
   private openBookAction(room: Room, player: PlayerIndex): Action {
     // Check first, so a refused request doesn't draw a page from the book.
-    const sub = room.game!.pending[player];
-    if (!sub || sub.done || sub.needsTarget) {
-      throw new ClientError("illegal_action", "You already opened the book this round");
+    const turn = room.game!.turn;
+    if (turn.player !== player) throw new ClientError("illegal_action", "It's not your turn");
+    if (turn.roll !== null) {
+      throw new ClientError("illegal_action", "You already opened the book this turn");
     }
     return {
       type: "open_book",
@@ -431,7 +441,7 @@ export class RoomManager {
     this.opts.onLog("game started", {
       room: room.code,
       players: seats.length,
-      lives: room.rules.lives,
+      figures: room.rules.figures,
     });
     for (const s of seats) {
       s.ready = false;
@@ -441,7 +451,7 @@ export class RoomManager {
       s.conn?.send({ type: "game_started", game: viewFor(room.game, i) });
     }
     this.broadcastRoom(room);
-    this.startRoundTimer(room);
+    this.startTurnTimer(room);
   }
 
   /**
@@ -451,7 +461,7 @@ export class RoomManager {
   private apply(room: Room, actions: Action[], auto: PlayerIndex[]): void {
     let game = room.game!;
     const events: GameEvent[] = [];
-    const roundBefore = game.round;
+    const turnBefore = game.turnNumber;
     for (const action of actions) {
       if (game.phase !== "playing") break;
       const r = applyAction(game, action);
@@ -468,11 +478,11 @@ export class RoomManager {
       });
     });
     if (game.phase === "finished") this.endGame(room);
-    else if (game.round !== roundBefore) this.startRoundTimer(room);
+    else if (game.turnNumber !== turnBefore) this.startTurnTimer(room);
   }
 
   private endGame(room: Room): void {
-    this.clearRoundTimer(room);
+    this.clearTurnTimer(room);
     const game = room.game!;
     room.phase = "finished";
     this.counters.gamesFinished++;
@@ -480,7 +490,13 @@ export class RoomManager {
       room: room.code,
       players: game.players.length,
       rounds: game.round,
+      turns: game.turnNumber,
       reason: game.endReason,
+    });
+    room.seats.forEach((s, i) => {
+      const place = game.players[i]!.place ?? game.players.length;
+      s.points += seriesPoints(place, game.players.length);
+      if (game.winner === i) s.wins++;
     });
     room.seats.forEach((s, i) => {
       s.conn?.send({
@@ -501,60 +517,41 @@ export class RoomManager {
     this.broadcastRoom(room);
   }
 
-  private startRoundTimer(room: Room): void {
-    this.clearRoundTimer(room);
+  private startTurnTimer(room: Room): void {
+    this.clearTurnTimer(room);
     const game = room.game!;
-    const seconds = game.rules.roundTimerSeconds;
+    const seconds = game.rules.turnTimerSeconds;
     if (seconds !== null) {
       const ms = seconds * this.opts.secondMs;
-      room.roundDeadline = this.opts.now() + ms;
-      room.roundTimer = setTimeout(
-        () => this.guard("round timer", () => this.onRoundTimeout(room)),
+      room.turnDeadline = this.opts.now() + ms;
+      room.turnTimer = setTimeout(
+        () => this.guard("turn timer", () => this.onTurnTimeout(room)),
         ms,
       );
     }
-    this.broadcast(room, { type: "round_timer", round: game.round, deadline: room.roundDeadline });
+    this.broadcast(room, {
+      type: "turn_timer",
+      turn: game.turnNumber,
+      deadline: room.turnDeadline,
+    });
   }
 
-  private clearRoundTimer(room: Room): void {
-    if (room.roundTimer) clearTimeout(room.roundTimer);
-    room.roundTimer = null;
-    room.roundDeadline = null;
+  private clearTurnTimer(room: Room): void {
+    if (room.turnTimer) clearTimeout(room.turnTimer);
+    room.turnTimer = null;
+    room.turnDeadline = null;
   }
 
-  /** Time ran out: finish every unfinished go (open the book, aim at the best target). */
-  private onRoundTimeout(room: Room): void {
-    room.roundTimer = null;
+  /** Time ran out: the server plays the rest of the turn (open the book, then a bot's move). */
+  private onTurnTimeout(room: Room): void {
+    room.turnTimer = null;
     if (room.phase !== "playing" || !room.game) return;
-    const round = room.game.round;
-    const auto: PlayerIndex[] = [];
-    let game = room.game;
-    const actions: Action[] = [];
-    // Plan each player's remaining steps one at a time against the evolving state.
-    for (let p = 0; p < game.players.length; p++) {
-      let guard = 0;
-      while (
-        game.round === round &&
-        game.phase === "playing" &&
-        game.pending[p] &&
-        !game.pending[p]!.done
-      ) {
-        if (guard++ > 50) break; // R6 rerolls: a book with all-dead slots can't loop forever
-        const sub = game.pending[p]!;
-        let action: Action;
-        if (sub.needsTarget) {
-          const n = slotForPage(sub.pages.at(-1)!)!;
-          const want = sub.card?.card === "double_shot" ? 2 : 1;
-          action = { type: "set_target", player: p, targets: suggestTargets(game, p, n, want) };
-        } else {
-          action = this.openBookAction(room, p);
-        }
-        if (!auto.includes(p)) auto.push(p);
-        actions.push(action);
-        game = applyAction(game, action).state;
-      }
-    }
-    if (actions.length) this.apply(room, actions, auto);
+    const game = room.game;
+    const p = game.turn.player;
+    const random = () => this.opts.randomInt(1_000_000_000) / 1_000_000_000;
+    const page = () => this.opts.randomPage(game.rules.totalPages);
+    const actions = botTurn(game, p, random, page);
+    if (actions.length) this.apply(room, actions, [p]);
   }
 
   private onGraceExpired(seat: Seat): void {
@@ -580,8 +577,8 @@ export class RoomManager {
       seats: [],
       rules,
       game: null,
-      roundTimer: null,
-      roundDeadline: null,
+      turnTimer: null,
+      turnDeadline: null,
       lastActivity: this.opts.now(),
     };
     this.rooms.set(code, room);
@@ -590,12 +587,12 @@ export class RoomManager {
   }
 
   private deleteRoom(room: Room): void {
-    this.clearRoundTimer(room);
+    this.clearTurnTimer(room);
     this.rooms.delete(room.code);
   }
 
   private backToLobby(room: Room): void {
-    this.clearRoundTimer(room);
+    this.clearTurnTimer(room);
     room.phase = "lobby";
     room.game = null;
     for (const s of room.seats) {
@@ -617,6 +614,8 @@ export class RoomManager {
       graceTimer: null,
       graceDeadline: null,
       lastEmoteAt: 0,
+      points: 0,
+      wins: 0,
     };
     room.seats.push(seat);
     conn.seat = seat;
@@ -732,6 +731,8 @@ export class RoomManager {
         wantsRematch: s.wantsRematch,
         left: s.left,
         graceDeadline: s.graceDeadline,
+        points: s.points,
+        wins: s.wins,
       })),
       rules: room.rules,
       isPublic: room.isPublic,

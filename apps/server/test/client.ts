@@ -1,7 +1,7 @@
 import type { AddressInfo } from "node:net";
 import WebSocket from "ws";
 import type { ClientMessage, ServerMessage } from "@paper-duel/protocol";
-import { createRng, isHidden, randomPage, type GameView } from "@paper-duel/engine";
+import { createRng, legalMoves, randomPage, type GameView, type Move } from "@paper-duel/engine";
 import { buildApp, type AppOptions } from "../src/app.js";
 import type { RoomManager } from "../src/rooms.js";
 
@@ -163,7 +163,7 @@ export async function startGame(
   count = 2,
   rules: Record<string, unknown> = {},
 ) {
-  const r = await room(server, count, { roundTimerSeconds: null, firstPlayer: "host", ...rules });
+  const r = await room(server, count, { turnTimerSeconds: null, firstPlayer: "host", ...rules });
   for (const c of r.clients) c.send({ type: "ready", ready: true });
   // A full room (6) starts by itself once everyone is ready; otherwise the host starts it.
   if (count < 6) {
@@ -174,29 +174,27 @@ export async function startGame(
   return { ...r, game: starts[0]!.game, views: starts.map((m) => m.game) };
 }
 
-/**
- * Plays automatically: whenever this player's go is unfinished, opens the book, or aims at
- * the first opponent still in.
- */
+/** An aggressive simple player: shoot if possible, else draw, else walk, else pass. */
+export function simpleMove(game: GameView, you: number): Move {
+  const moves = legalMoves(game, you);
+  return (
+    moves.find((m) => m.kind === "shoot") ??
+    moves.find((m) => m.kind === "draw") ??
+    moves.find((m) => m.kind === "move") ?? { kind: "pass" }
+  );
+}
+
+/** Plays automatically: on this player's turn, opens the book, then makes a simple move. */
 export function autoplay(client: TestClient, you: number, current?: GameView): void {
   let lastKey = "";
   const act = (game: GameView) => {
-    if (game.phase !== "playing") return;
-    const sub = game.pending[you];
-    if (!sub || isHidden(sub) || sub.done) return;
+    if (game.phase !== "playing" || game.turn.player !== you) return;
     // Other players' updates also land here; don't resend for a step already sent.
-    const key = `${game.id}:${game.round}:${sub.pages.length}:${sub.needsTarget}`;
+    const key = `${game.id}:${game.turnNumber}:${game.turn.roll}`;
     if (key === lastKey) return;
     lastKey = key;
-    if (sub.needsTarget) {
-      const want = sub.card?.card === "double_shot" ? 2 : 1;
-      const targets = game.players
-        .flatMap((p, i) => (i !== you && !p.out ? [i] : []))
-        .slice(0, want);
-      client.send({ type: "set_target", targets });
-    } else {
-      client.send({ type: "open_book" });
-    }
+    if (game.turn.roll === null) client.send({ type: "open_book" });
+    else client.send({ type: "act", move: simpleMove(game, you) });
   };
   client.onMessage((m) => {
     if (m.type === "game_started" || m.type === "game_update" || m.type === "game_state")

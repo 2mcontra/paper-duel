@@ -79,6 +79,57 @@ A card that no longer makes sense when it resolves (its target is gone) **fizzle
 
 **Stalemate (R11):** if no slot number is alive for two players still in, the player with the most living slots wins, and a tie is a draw.
 
+### 1.4 Version 3: track rules (current)
+
+Added after M6 because playtesters still found version 2 "just clicking the same button": the book decided everything, so players made almost no choices. Version 3 keeps the book and the stick figures but puts them on a Ludo-style track, so every roll is a decision about which figure to build, walk or shoot with, and who to go after. Sections 1.1 to 1.3 describe the earlier versions.
+
+**Board and figures**
+- 2 to 6 players share one loop track of 10 squares per player (20 to 60 squares). Each player's **start square** is in their colour. Every 5th square is a **star**: start squares and the halfway points between them.
+- Everyone has 3 **figures** (`figures`, 1 to 5), starting at home with a head and body drawn. Parts are still head, body, face, gun, bullets.
+
+**Turns** (one player at a time, in seat order, from a random or host first player)
+1. Open the book. The page's last digit is your **roll**, with 0 counting as 10. Lucky pages still give a card.
+2. Optionally play one card.
+3. Do one thing:
+   - **Draw** the next part on any of your figures, at home or on the track.
+   - **Walk** a figure that has a face exactly `roll` squares clockwise. From home it enters on your start square (a roll of 1 lands on it).
+   - **Shoot** with a loaded figure on the track (not standing on a star) at any enemy figure up to `roll` squares away, either direction. The target dies. Shooting uses up the bullets (`bullets`: consumed or reusable).
+   - **Pass.**
+- **Stomp:** landing exactly on enemy figures sends them home, and they drop their gun and bullets (back to stage 3).
+- **Stars are safe:** figures on a star can't be shot or stomped, and can't shoot.
+- **Homes are not safe:** figures at home (with at least a head) can be shot, measured from their start square. Hiding at home is no defence.
+- A **shield** blocks one shot or one stomp.
+- The turn timer (`turnTimerSeconds`, default 20) plays your turn for you if it runs out, using the built-in bot.
+
+**Winning and the podium**
+- Lose all your figures and you're out. Your **place** is the number of players still in, so the first out comes last. Players wiped out by the same shot share a place.
+- The last player standing wins. If the round limit (`maxRounds`, default 40) is reached, the players left are ranked by figures left, then kills; ties share a place, and a shared 1st place is a draw.
+- The end screen shows a **podium** for the top three, everyone's place and stats, and **awards** for the single best player in each: 🎯 Sharpshooter (kills), 🦶 Stomper, 🫀 Survivor (figures left), ✏️ Artist (parts drawn), 🃏 Card shark, 🧭 Explorer (squares walked), 🍀 Lucky book and 🌧️ Unlucky book (average roll).
+- **Series score:** each room keeps points across rematches (1st 3, 2nd 2, 3rd 1; last place never scores) and wins.
+
+**Cards** (one per turn, after opening the book)
+
+| Card | Effect |
+|------|--------|
+| 🛡️ Shield | One of your figures blocks the next shot or stomp |
+| 💥 Double shot | Your shot this turn can hit two figures in range |
+| 🧽 Eraser | Rub out the top part of any enemy figure (anywhere) |
+| 🔄 Swap | Swap places between one of your figures and an enemy figure on the track |
+| 🫳 Steal | Take a loaded enemy's bullets into one of your unloaded guns |
+| 🎲 Reroll | Open the book again and use the new page |
+
+**Balance** (`pnpm sim`, 2,000 bot games per size, default rules, about 7 s per turn):
+
+| Players | Median length | Ended by round limit | Seat win rates |
+|---------|---------------|----------------------|----------------|
+| 2 | 13 rounds, about 3 min | 0% | 56% / 44% |
+| 3 | 17 rounds, about 5 min | 0.1% | 36 / 33 / 31% |
+| 4 | 21 rounds, about 8 min | 2% | 23 to 27% |
+| 5 | 26 rounds, about 11 min | 15% | 19 to 21% |
+| 6 | 31 rounds, about 14 min | 27% | 15 to 17% |
+
+Going first is a small advantage with 2 players. With 5 or 6 players, 2 figures each gives a shorter game.
+
 ## 2. Virtual Book Design
 
 ### 2.1 Concept
@@ -202,7 +253,7 @@ All messages are JSON, validated with zod. A `type` field discriminates.
 
 Schemas and types live in `packages/protocol`, shared by server and client.
 
-### 5.1 Client → Server (protocol v2)
+### 5.1 Client → Server (protocol v3)
 | Message | Payload | Purpose |
 |---------|---------|---------|
 | `create_room` | `{ name, rules?, maxPlayers? }` | Make a room (2 to 6 seats) and get a code |
@@ -211,9 +262,9 @@ Schemas and types live in `packages/protocol`, shared by server and client.
 | `configure` | `{ rules?, maxPlayers? }` | Host only, lobby only. Clears everyone's ready flag |
 | `ready` | `{ ready }` | Set or clear ready |
 | `start` | `{}` | Host only: 2+ players, all ready. A full ready room starts by itself |
-| `play_card` | `{ play \| null }` | Queue (or cancel) a card for this round, before opening the book |
-| `open_book` | `{}` | Open the book for this round's go |
-| `set_target` | `{ targets }` | Pick who an armed slot shoots (two with Double shot) |
+| `open_book` | `{}` | Your turn: open the book (the roll is the page's last digit, 0 = 10) |
+| `play_card` | `{ play }` | After opening the book, before acting; one per turn. A reroll gets a new page from the server |
+| `act` | `{ move }` | `draw`, `move`, `shoot` (1 or 2 targets) or `pass`; ends your turn |
 | `emote` | `{ emote }` | Quick reaction; one per 1.5 s |
 | `rematch` | `{}` | Vote for a rematch; starts when everyone still seated votes |
 | `leave` | `{}` | Leave the room (in a game: you are out) |
@@ -224,11 +275,11 @@ Schemas and types live in `packages/protocol`, shared by server and client.
 | Message | Payload |
 |---------|---------|
 | `joined` | `{ protocol, sessionToken, you, code }`: you hold a seat. Re-sent if your seat index changes |
-| `room_state` | `{ room }`: seats (ready, connected, left, rematch votes, grace deadline), room size, rules |
-| `game_started` | `{ game }`: a new game, as **your view** (other hands and unfinished goes hidden) |
+| `room_state` | `{ room }`: seats (ready, connected, left, rematch votes, grace deadline, series points and wins), room size, rules |
+| `game_started` | `{ game }`: a new game, as **your view** (other players' cards hidden) |
 | `game_state` | `{ game }`: snapshot of the current game, sent on resume |
-| `game_update` | `{ events, game, auto }`: new events (redacted for you) and the game. `auto` lists players the round timer acted for |
-| `round_timer` | `{ round, deadline }`: epoch ms, or null with no timer |
+| `game_update` | `{ events, game, auto }`: new events (redacted for you) and the game, without its log. `auto` lists players the turn timer played for |
+| `turn_timer` | `{ turn, deadline }`: epoch ms, or null with no timer |
 | `game_over` | `{ winner, reason, game }` |
 | `emote` | `{ from, emote }` |
 | `left` | `{ reason }`: you no longer hold a seat (`you_left`, `replaced`) |
@@ -331,9 +382,14 @@ Updates used to resend the last 200 log events every time (6.9 KB a message). Th
 
 **M6 status:** done. See `DEPLOY.md`. The image is about 330 MB (Node slim base plus one bundled server file and the built client), runs as a non-root user, and has a health check. Verified locally with `docker compose` behind Caddy over HTTPS: the full browser test suite passes against it, HTTP redirects to HTTPS, `/metrics` is blocked from outside, and WebSocket connections from other origins get 403. CI builds and smoke-tests the image on every push.
 
+### Version 3: track rules (after M6)
+Ludo-style track with movement, stomps, ranged shots, six cards, podium, awards and a series score (section 1.4). Protocol bumped to v3.
+
+**Status:** done. The engine, server, client and browser tests were rewritten for turns. Players with animations on no longer fall behind: playback speeds up when events pile up, and the podium waits until the board has caught up.
+
 ### M7: Extras (as time allows)
 - Provably fair mode (commit-reveal, section 2.2).
-- Bot opponent for solo play.
+- Bot opponent for solo play (the engine's bot already plays timed-out turns).
 - Spectator mode.
 - Replay viewer from the event log.
 - Match history and leaderboard.

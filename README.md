@@ -1,6 +1,6 @@
 # Paper Duel
 
-A 2 to 6 player browser version of the pen-and-paper stick-figure gun duel, with a virtual book, target picking and lucky cards. See [plan.md](plan.md).
+A 2 to 6 player browser game: pen-and-paper stick-figure gunfights on a Ludo-style track. Open a virtual book to roll, then draw, walk, stomp or shoot. Lucky cards, a podium and awards for every game, and a series score for rematches. See [plan.md](plan.md).
 
 ## Layout
 

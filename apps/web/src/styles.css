@@ -332,16 +332,6 @@ select {
   font-size: 16px;
 }
 
-.hearts {
-  color: var(--hit);
-  letter-spacing: 1px;
-  white-space: nowrap;
-}
-
-.hearts__lost {
-  color: var(--rule);
-}
-
 .bubble {
   display: inline-block;
   margin-left: 6px;
@@ -367,252 +357,6 @@ select {
   100% {
     opacity: 0;
   }
-}
-
-/* Opponents: compact cards, 1 to 5 of them. */
-.opponents {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 210px), 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-}
-
-.opponents--1 {
-  grid-template-columns: 1fr;
-}
-
-.opp {
-  font: inherit;
-  color: inherit;
-  text-align: left;
-  display: grid;
-  gap: 2px;
-  padding: 8px 10px;
-  background: var(--paper);
-  border: 2px solid var(--ink-soft);
-  border-radius: 12px 8px 14px 9px / 9px 13px 8px 12px;
-  min-width: 0;
-}
-
-.opp--out {
-  opacity: 0.5;
-}
-
-.opp--aimable {
-  cursor: pointer;
-  border-color: var(--hit);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--hit) 20%, transparent);
-}
-
-.opp--aimable:hover,
-.opp--aimable:focus-visible {
-  outline: none;
-  background: color-mix(in srgb, var(--hit) 10%, var(--paper));
-}
-
-.opp--aimed {
-  background: color-mix(in srgb, var(--hit) 18%, var(--paper));
-}
-
-.opp__head,
-.opp__meta {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.opp__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 20px;
-}
-
-.opp__status {
-  font-size: 15px;
-  color: var(--ink-soft);
-  white-space: nowrap;
-}
-
-.opp__status.is-ready {
-  color: var(--ok);
-}
-
-.opp__cards {
-  font-size: 15px;
-  color: var(--ink-soft);
-}
-
-.opp__slots {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 2px;
-}
-
-.opp__aimhint {
-  font-size: 15px;
-  color: var(--hit);
-}
-
-.mini {
-  font: inherit;
-  color: inherit;
-  position: relative;
-  display: grid;
-  justify-items: center;
-  padding: 0;
-  background: none;
-  border: none;
-  border-radius: 6px;
-}
-
-.mini .figure {
-  width: 100%;
-  max-width: 44px;
-  stroke-width: 5;
-}
-
-.mini__num {
-  font-size: 13px;
-  color: var(--margin);
-  line-height: 1;
-}
-
-.mini--aim {
-  background: color-mix(in srgb, var(--hit) 16%, transparent);
-}
-
-.mini--hit {
-  background: color-mix(in srgb, var(--hit) 28%, transparent);
-}
-
-.mini--pick {
-  cursor: pointer;
-  outline: 2px dashed var(--accent);
-}
-
-.mini--pick:hover,
-.mini--pick:focus-visible {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-/* Your own board: big figures, one per ruled row. */
-.myboard {
-  margin-bottom: 8px;
-}
-
-.myboard--out {
-  opacity: 0.55;
-}
-
-.myboard__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.myboard__name {
-  font-size: 22px;
-  background: var(--highlight);
-  padding: 0 4px;
-}
-
-.row {
-  display: grid;
-  grid-template-columns: 0 1fr;
-  align-items: center;
-  border-top: 1px solid var(--rule);
-  transition: background-color 300ms ease;
-}
-
-.row--rolled {
-  background: color-mix(in srgb, var(--highlight) 70%, transparent);
-}
-
-.row--hit {
-  background: color-mix(in srgb, var(--hit) 18%, transparent);
-}
-
-.row--picked {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
-}
-
-.row__num {
-  margin-left: -50px;
-  width: 30px;
-  text-align: right;
-  font-size: 26px;
-  color: var(--margin);
-}
-
-.cell {
-  position: relative;
-  display: flex;
-  justify-content: flex-start;
-  padding: 2px 0 2px 8px;
-}
-
-.cell--pick {
-  font: inherit;
-  cursor: pointer;
-  background: none;
-  border: 2px dashed var(--accent);
-  border-radius: 8px;
-  margin: 2px 0;
-}
-
-.cell--pick:hover,
-.cell--pick:focus-visible {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-.shield-badge {
-  position: absolute;
-  left: 4px;
-  top: 2px;
-  font-size: 22px;
-}
-
-.shield-badge--mini {
-  font-size: 13px;
-  left: 0;
-  top: 12px;
-}
-
-.figure {
-  width: min(84px, 22vw);
-  height: auto;
-  fill: none;
-  stroke: var(--ink);
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.figure__fill {
-  fill: var(--ink);
-  stroke: none;
-}
-
-.figure__gun {
-  fill: var(--ink);
-}
-
-.figure__ghost {
-  stroke: var(--rule);
-  stroke-dasharray: 3 5;
-}
-
-.figure--dead {
-  opacity: 0.55;
-}
-
-.figure--dead .figure__x {
-  stroke: var(--hit);
-  stroke-width: 6;
 }
 
 /* Cards in hand */
@@ -786,27 +530,6 @@ select {
   overflow-y: auto;
 }
 
-.log__round {
-  padding: 4px 0;
-  border-bottom: 1px dotted var(--rule);
-}
-
-.log__round-num {
-  font-size: 14px;
-  color: var(--ink-soft);
-}
-
-.log__round ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.log__round li {
-  padding: 1px 0;
-  font-size: 17px;
-}
-
 .log--them {
   color: var(--ink-soft);
 }
@@ -874,20 +597,6 @@ select {
     font-size: 36px;
   }
 
-  .row__num {
-    margin-left: -46px;
-    width: 26px;
-    font-size: 22px;
-  }
-
-  .opponents {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .opponents--1 {
-    grid-template-columns: 1fr;
-  }
-
   .playcard {
     width: calc(50% - 4px);
   }
@@ -923,61 +632,9 @@ select {
   cursor: pointer;
 }
 
-/* Pencil: new strokes draw themselves in (paths use pathLength="1"). */
-.ink {
-  stroke-dasharray: 1;
-  stroke-dashoffset: 1;
-  animation: ink 420ms ease-out forwards;
-}
-
-.ink--x {
-  animation-duration: 380ms;
-  animation-delay: 80ms;
-}
-
-.ink-fill {
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: ink-fill 320ms ease-out both;
-}
-
 @keyframes ink {
   to {
     stroke-dashoffset: 0;
-  }
-}
-
-@keyframes ink-fill {
-  from {
-    opacity: 0;
-    transform: scale(0.6);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-
-.figure--hit {
-  animation: shake 420ms ease;
-}
-
-@keyframes shake {
-  0%,
-  100% {
-    transform: none;
-  }
-  20% {
-    transform: translateX(-4px) rotate(-3deg);
-  }
-  40% {
-    transform: translateX(4px) rotate(3deg);
-  }
-  60% {
-    transform: translateX(-3px);
-  }
-  80% {
-    transform: translateX(2px);
   }
 }
 
@@ -1048,16 +705,6 @@ select {
     opacity: 1;
     transform: none;
   }
-}
-
-/* Reveal: whose go is being shown. */
-.opp--active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent);
-}
-
-.mini--rolled {
-  background: color-mix(in srgb, var(--highlight) 80%, transparent);
 }
 
 .revealing {
@@ -1132,9 +779,6 @@ select {
 
 /* Reduced motion: no flips, draws or shakes; the reveal is instant (see playback). */
 @media (prefers-reduced-motion: reduce) {
-  .ink,
-  .ink-fill,
-  .figure--hit,
   .book--flipping .book__content,
   .shot-line,
   .shot-mark,
@@ -1152,4 +796,455 @@ select {
   margin: 0 0 8px;
   padding-left: 0;
   color: var(--ink-soft);
+}
+
+/* ---------- v3: the track board ---------- */
+
+.board-page {
+  max-width: 1120px;
+}
+
+.board-grid {
+  display: grid;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (min-width: 900px) {
+  .board-grid {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    grid-template-areas:
+      "track controls"
+      "players controls";
+  }
+
+  .board-main {
+    grid-area: track;
+  }
+
+  .board-grid .controls {
+    grid-area: controls;
+  }
+
+  .board-players {
+    grid-area: players;
+  }
+}
+
+.board-grid .controls {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  margin: 0;
+}
+
+.track {
+  display: block;
+  width: 100%;
+  max-width: 560px;
+  margin: 0 auto;
+  overflow: visible;
+  touch-action: manipulation;
+}
+
+.track__ring {
+  fill: none;
+  stroke: var(--rule);
+  stroke-width: 2;
+  stroke-dasharray: 4 6;
+}
+
+.sq {
+  fill: var(--paper);
+  stroke: var(--ink-soft);
+  stroke-width: 1.5;
+}
+
+.sq--star {
+  stroke: var(--ink);
+}
+
+.sq--marked {
+  fill: var(--highlight);
+  stroke: var(--accent);
+  stroke-width: 3;
+  stroke-dasharray: 3 2;
+}
+
+.sq__star {
+  text-anchor: middle;
+  fill: var(--ink-soft);
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.home__box {
+  fill: var(--paper);
+  stroke-width: 2;
+  stroke-dasharray: 5 3;
+}
+
+.home--turn .home__box {
+  stroke-dasharray: none;
+  stroke-width: 3.5;
+}
+
+.home--out {
+  opacity: 0.45;
+}
+
+.home__name {
+  text-anchor: middle;
+  font-size: 14px;
+  font-family: var(--font);
+}
+
+.track__center {
+  text-anchor: middle;
+  font-size: 22px;
+  fill: var(--ink-soft);
+  font-family: var(--font);
+}
+
+.track__center--small {
+  font-size: 14px;
+}
+
+/* Figures move with a CSS transition on their transform. */
+.tfig {
+  transition: transform 480ms cubic-bezier(0.3, 0.7, 0.3, 1.1);
+}
+
+.tfig__hit {
+  fill: transparent;
+  stroke: none;
+}
+
+.tfig--dead {
+  opacity: 0.45;
+}
+
+.mfig {
+  fill: none;
+}
+
+.mfig__line {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.mfig__ghost {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-dasharray: 2 2;
+  opacity: 0.5;
+}
+
+.mfig__shield {
+  fill: color-mix(in srgb, var(--accent) 12%, transparent);
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 4 2;
+}
+
+.mfig__letter {
+  text-anchor: middle;
+  font-size: 11px;
+  font-family: var(--font);
+}
+
+.mfig__x {
+  stroke: var(--hit) !important;
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.tfig--mine .tfig__hit {
+  fill: color-mix(in srgb, var(--highlight) 45%, transparent);
+}
+
+.tfig--selected .tfig__hit {
+  fill: var(--highlight);
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+
+.tfig--target .tfig__hit {
+  fill: color-mix(in srgb, var(--hit) 14%, transparent);
+  stroke: var(--hit);
+  stroke-width: 2.5;
+  stroke-dasharray: 4 3;
+  animation: aim 1.2s linear infinite;
+}
+
+.tfig--click {
+  cursor: crosshair;
+}
+
+.tfig--click:focus-visible {
+  outline: none;
+}
+
+.tfig--click:focus-visible .tfig__hit {
+  stroke-width: 4;
+}
+
+@keyframes aim {
+  to {
+    stroke-dashoffset: -14;
+  }
+}
+
+/* Players under the board. */
+.players {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 6px;
+}
+
+.pl {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+  padding: 4px 10px;
+  border: 2px solid;
+  border-radius: 10px;
+  background: var(--paper);
+  font-size: 17px;
+}
+
+.pl--turn {
+  box-shadow: 0 0 0 3px var(--highlight);
+}
+
+.pl--out {
+  opacity: 0.5;
+}
+
+.pl__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.pl__name {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pl__figs {
+  letter-spacing: 1px;
+}
+
+.pl__fig--dead {
+  color: var(--hit) !important;
+  opacity: 0.6;
+}
+
+.pl__cards,
+.pl__pts,
+.pl__status {
+  font-size: 14px;
+  color: var(--ink-soft);
+}
+
+.pl__pts {
+  color: var(--accent);
+}
+
+/* Turn choices. */
+.choices {
+  display: grid;
+  gap: 8px;
+}
+
+.roll {
+  font-size: 30px;
+  color: var(--accent);
+}
+
+.choice-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--rule);
+}
+
+.choice-row__fig {
+  display: grid;
+  justify-items: center;
+  width: 58px;
+  flex: none;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.choice-row__opts,
+.card-opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.opt {
+  text-align: left;
+}
+
+.opt--hot {
+  border-color: var(--hit);
+}
+
+.log ol {
+  list-style: none;
+}
+
+.log ol > li {
+  border-left: 4px solid var(--rule);
+  padding-left: 8px;
+  margin-bottom: 4px;
+}
+
+.log__round-num {
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+/* ---------- podium ---------- */
+
+.podium {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  gap: 10px;
+  margin: 14px 0 8px;
+}
+
+.podium__spot {
+  display: grid;
+  justify-items: center;
+  width: 96px;
+  animation: rise 700ms ease-out both;
+}
+
+.podium__spot--1 {
+  animation-delay: 500ms;
+}
+
+.podium__spot--2 {
+  animation-delay: 250ms;
+}
+
+.podium__fig {
+  width: 54px;
+  height: 66px;
+  overflow: visible;
+}
+
+.podium__crown {
+  text-anchor: middle;
+  font-size: 13px;
+}
+
+.podium__name {
+  font-size: 16px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.podium__block {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  border: 2px solid;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: color-mix(in srgb, var(--highlight) 50%, var(--paper));
+  font-size: 30px;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.standings {
+  margin: 8px 0;
+  padding-left: 0;
+  list-style: none;
+  font-size: 17px;
+}
+
+.awards {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+  display: grid;
+  gap: 4px;
+}
+
+.award {
+  display: grid;
+  grid-template-columns: 28px auto 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 17px;
+}
+
+.award__icon {
+  font-size: 20px;
+}
+
+.award__value {
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.series {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0 4px;
+  font-size: 17px;
+}
+
+.series caption {
+  text-align: left;
+  color: var(--ink-soft);
+  font-size: 15px;
+}
+
+.series th,
+.series td {
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.series--you td {
+  font-weight: bold;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tfig--target .tfig__hit,
+  .podium__spot {
+    animation: none !important;
+  }
 }
